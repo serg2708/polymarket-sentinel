@@ -1,223 +1,224 @@
-# PolySentinel — торговый бот для Polymarket
+# PolySentinel — Polymarket Monitoring Bot
 
-Система мониторинга рынков предсказаний. Находит расхождения в ценах между платформами, аномалии ликвидности и информационные сигналы. Отправляет алерты в Telegram.
-
----
-
-## Как работает бот
-
-```
-1. ingest — собирает данные каждые 5–300 секунд
-   ├── Polymarket WebSocket → цены в реальном времени → TimescaleDB
-   ├── Kalshi REST poll → цены каждые 30 сек (если API ключ есть)
-   ├── NewsAPI + RSS (BBC, NYT, Al Jazeera и др.) → статьи в Redis
-   └── Gamma API → список рынков + метаданные каждые 5 мин
-
-2. detectors — сканирует DB/Redis каждые 5 секунд
-   ├── Арбитраж: YES+NO < $1.00 → мгновенный алерт
-   ├── Ликвидность: спред, дисбаланс книги, price spike
-   ├── Tail Risk: рынок 3–35% + LLM говорит "выше" → алерт (раз в 1ч)
-   └── News Divergence: LLM скорит новости, EMA сентимента vs цена (раз в 2 мин)
-
-3. matcher — сопоставляет рынки между платформами
-   └── Polymarket ↔ Kalshi / Manifold через LLM (Claude или Ollama)
-
-4. bot — доставляет алерты
-   ├── Читает очередь Redis
-   ├── Проверяет дедупликацию, мьюты, quiet hours (22:00–08:00 CET)
-   └── Отправляет в Telegram с кнопками
-```
+A prediction market monitoring system that detects price discrepancies between platforms, liquidity anomalies, and information signals. Sends alerts to Telegram.
 
 ---
 
-## Как используется Claude (и Ollama)
-
-Бот использует LLM в трёх местах. Модель выбирается по настройке `OLLAMA_PRIMARY`:
-- `OLLAMA_PRIMARY=true` → сначала Ollama (локально, бесплатно), Claude как fallback
-- `OLLAMA_PRIMARY=false` → сначала Claude API, Ollama как fallback
-
-**Рекомендуемая модель:** `qwen2.5:7b-instruct-q8_0` (8 GB VRAM, отличное качество JSON)
-
-### 1. News Divergence — скоринг новостей
-
-**Файл:** `packages/detectors/news_divergence.py`
-
-Каждые 2 минуты для каждого отслеживаемого рынка:
-1. Берёт последние 5–10 статей из Redis (загружены ingest-ом)
-2. Отправляет каждую статью в LLM с промптом:
-   > "Рынок: {вопрос}, текущая цена YES: {цена}. Эта новость повышает (R), понижает (L) или не влияет (U) на P(YES)? Укажи confidence 0.0–1.0"
-3. LLM возвращает JSON: `{"direction": "R", "confidence": 0.85, "reason": "..."}`
-4. Считает EMA сентимента по всем статьям (alpha=0.3)
-5. Если `|EMA| > 0.4` и цена рынка не соответствует → алерт
-
-### 2. Tail Risk — оценка недооценённых событий
-
-**Файл:** `packages/ingest/llm_prior.py`
-
-Раз в 1 час для рынков с ценой **3–35%** (объём >20k):
-1. Передаёт LLM текст вопроса + свежие заголовки новостей
-2. LLM оценивает P(YES) с confidence и объяснением
-3. Если LLM даёт оценку значительно выше рыночной (gap ≥ 3 пп, множитель ≥ 1.25×, confidence ≥ 0.65) → алерт
-
-Покрывает: геополитику (перевороты, эскалации), мульти-outcome ивенты (Eurovision, Оскар), регуляторные сюрпризы, крипто.
-
-**Важно:** Tail Risk срабатывает только при наличии свежих новостей (NewsAPI key нужен). Без новостей сигналов не будет.
-
-### 3. Market Matching — сопоставление рынков
-
-**Файл:** `packages/matcher/`
-
-Автоматически ищет одинаковые вопросы на разных платформах:
-1. Берёт рынки с Polymarket и Kalshi/Manifold
-2. Отправляет пары в LLM: "Это один и тот же вопрос? Уверенность 0–100%"
-3. Пары с confidence ≥ 85% → `approved_by = 'auto'` (активны автоматически)
-4. Пары с confidence < 85% → `approved_by = 'pending'` (нужна ручная проверка)
-
-**Использует claude-haiku** или Ollama, запускается каждые 30 мин (Kalshi) и 6 часов (Manifold).
-
-### Текущий статус (что отключено)
+## How the bot works
 
 ```
-✅ включено:   news_divergence, tail_risk, auto-matching
-❌ отключено:  soft_edge (API вызовы Metaculus/Manifold/Claude)
-❌ отключено:  llm_prior standalone scan (4h cycle)
-```
+1. ingest — collects data every 5–300 seconds
+   ├── Polymarket WebSocket → real-time prices → TimescaleDB
+   ├── Kalshi REST poll → prices every 30s (if API key is set)
+   ├── NewsAPI + RSS (BBC, NYT, Al Jazeera, etc.) → articles into Redis
+   └── Gamma API → market list + metadata every 5 min
 
-Причина: экономия API токенов. Tail risk и news divergence уже используют LLM эффективно.
+2. detectors — scans DB/Redis every 5 seconds
+   ├── Arbitrage: YES+NO < $1.00 → instant alert
+   ├── Liquidity: spread, book imbalance, price spike
+   ├── Tail Risk: market 3–35% + LLM says "higher" → alert (every 1h)
+   └── News Divergence: LLM scores news, sentiment EMA vs price (every 2 min)
+
+3. matcher — matches markets across platforms
+   └── Polymarket ↔ Kalshi / Manifold via LLM (Ollama or Claude)
+
+4. bot — delivers alerts
+   ├── Reads Redis queue
+   ├── Checks deduplication, mutes, quiet hours (22:00–08:00 CET)
+   └── Sends to Telegram with inline buttons
+```
 
 ---
 
-## Архитектура
+## LLM usage (Ollama + Claude)
+
+The bot uses an LLM in three places. The model is chosen via `OLLAMA_PRIMARY`:
+- `OLLAMA_PRIMARY=true` → Ollama first (local, free), Claude as fallback
+- `OLLAMA_PRIMARY=false` → Claude API first, Ollama as fallback
+
+**Recommended model:** `qwen2.5:7b-instruct-q8_0` (8 GB VRAM, excellent JSON quality)
+
+### 1. News Divergence — article scoring
+
+**File:** `packages/detectors/news_divergence.py`
+
+Every 2 minutes, for each tracked market:
+1. Fetches the last 5–10 articles from Redis (loaded by ingest)
+2. Sends each article to LLM with a prompt:
+   > "Market: {question}, current YES price: {price}. Does this news raise (R), lower (L), or not affect (U) P(YES)? Give confidence 0.0–1.0"
+3. LLM returns JSON: `{"direction": "R", "confidence": 0.85, "reason": "..."}`
+4. Computes EMA of sentiment across articles (alpha=0.3)
+5. If `|EMA| > 0.4` and market price does not match → alert
+
+### 2. Tail Risk — underpriced event detection
+
+**File:** `packages/ingest/llm_prior.py`
+
+Every 1 hour, for markets priced **3–35%** (volume >20k):
+1. Passes the question text + fresh news headlines to LLM
+2. LLM estimates P(YES) with confidence and reasoning
+3. If LLM estimate is significantly above market price (gap ≥ 3 pp, multiplier ≥ 1.25×, confidence ≥ 0.65) → alert
+
+Covers: geopolitics (coups, escalations), multi-outcome events (Eurovision, Oscars), regulatory surprises, crypto.
+
+**Note:** Tail Risk only fires when fresh news is available (NewsAPI key required). Without news there will be no signals.
+
+### 3. Market Matching — cross-platform pairing
+
+**File:** `packages/matcher/`
+
+Automatically finds the same question on different platforms:
+1. Fetches markets from Polymarket and Kalshi/Manifold
+2. Sends pairs to LLM: "Is this the same question? Confidence 0–100%"
+3. Pairs with confidence ≥ 85% → `approved_by = 'auto'` (active automatically)
+4. Pairs with confidence < 85% → `approved_by = 'pending'` (needs manual review)
+
+Uses Ollama (or Claude as fallback), runs every 30 min (Kalshi) and 6 hours (Manifold).
+
+### Current status
+
+```
+✅ enabled:   news_divergence, tail_risk, auto-matching
+❌ disabled:  soft_edge (Metaculus/Manifold/Claude API calls)
+❌ disabled:  llm_prior standalone scan (4h cycle)
+```
+
+Reason: API token economy. Tail risk and news divergence already use LLM efficiently.
+
+---
+
+## Architecture
 
 ```
 Polymarket WS/REST ──┐
 Manifold API         ├── ingest ──► DB (TimescaleDB) + Redis
-Kalshi API (опц.)    ┘                       │
+Kalshi API (opt.)    ┘                       │
 NewsAPI / RSS (BBC, NYT,                     │
-  Al Jazeera, FP...)      ┌──────────────────┤
-                           │                 │
+  Al Jazeera, FP...)       ┌─────────────────┤
+                            │                │
                         detectors         matcher
-                           │                 │
-                     алерты в Redis   market_matches в DB
-                           │
-                          bot ──► Telegram
+                            │                │
+                      alerts → Redis  market_matches → DB
+                            │
+                           bot ──► Telegram
 ```
 
-### Сервисы
+### Services
 
-| Сервис | Порт | Назначение |
+| Service | Port | Purpose |
 |---|---|---|
-| `ingest` | 8000 | Цены с Polymarket (WS + REST), Kalshi, новости RSS/NewsAPI |
-| `detectors` | 8001 | Обнаружение сигналов каждые 5 сек |
-| `bot` | 8002 | Отправка алертов в Telegram, команды |
-| `matcher` | 8003 | Поиск пар рынков между платформами |
-| `db` | 5432 | TimescaleDB — цены, рынки, алерты |
-| `redis` | 6379 | Очередь алертов, дедупликация, кеш |
-| ~~`prometheus`~~ | 9090 | Отключён в `docker-compose.yml` — не нужен для работы бота |
-| ~~`grafana`~~ | 3000 | Отключён в `docker-compose.yml` — не нужен для работы бота |
+| `ingest` | 8000 | Prices from Polymarket (WS + REST), Kalshi, news RSS/NewsAPI |
+| `detectors` | 8001 | Signal detection every 5 sec |
+| `bot` | 8002 | Telegram alert delivery, commands |
+| `matcher` | 8003 | Cross-platform market pair discovery |
+| `db` | 5432 | TimescaleDB — prices, markets, alerts |
+| `redis` | 6379 | Alert queue, deduplication, cache |
+| ~~`prometheus`~~ | 9090 | Disabled in `docker-compose.yml` — not needed for bot operation |
+| ~~`grafana`~~ | 3000 | Disabled in `docker-compose.yml` — not needed for bot operation |
 
-> Prometheus и Grafana закомментированы в `docker-compose.yml` для снижения нагрузки на ПК. Раскомментировать при необходимости мониторинга метрик.
+> Prometheus and Grafana are commented out in `docker-compose.yml` to reduce PC load. Uncomment if you need metrics dashboards.
 
 ---
 
-## Запуск
+## Quick start
 
 ```bash
-# Первый раз
-cp .env.example .env   # заполни токены
-cd polysentinel
+# First time
+cp .env.example .env   # fill in your tokens
 docker compose build
 docker compose up -d
 
-# Проверить статус
+# Check status
 docker compose ps
 docker compose logs -f detectors
 
-# Пересобрать после изменения кода (restart НЕ работает)
-docker build --no-cache -t polysentinel-detectors:latest \
+# Rebuild after code changes (restart does NOT pick up code changes)
+docker build --no-cache -t polymarket-sentinel-detectors:latest \
   -f packages/detectors/Dockerfile .
 docker compose up -d --force-recreate detectors
 ```
 
-> ⚠️ `docker compose restart` не подхватывает изменения кода — всегда нужен `build --no-cache` + `up --force-recreate`.
+> `docker compose restart` does not reload code changes — always use `build --no-cache` + `up --force-recreate`.
 
-### Если контейнеры упали (db/redis exited 255)
+### If containers crash (db/redis exited 255)
 
-Происходит при переходе ПК в сон — Docker Desktop VM убивается. Восстановление:
+This happens when the PC sleeps — Docker Desktop VM is killed. Recovery:
 
 ```bash
 docker compose up -d
 ```
 
-Для постоянного решения: Docker Desktop → Settings → Resources → снять галку **"Enable Resource Saver"**. Это главная причина крашей — VM паузится при простое.
+Permanent fix: Docker Desktop → Settings → Resources → uncheck **"Enable Resource Saver"**. This is the main crash cause — the VM is paused when idle.
 
-### Переменные окружения (`.env`)
+---
+
+## Environment variables (`.env`)
 
 ```env
 # Telegram
 TELEGRAM_BOT_TOKEN=...
-ADMIN_CHAT_ID=...              # твой chat_id
+ADMIN_CHAT_ID=...              # your chat_id (get via @userinfobot)
 
-# Ollama (основная LLM — бесплатно, локально)
-OLLAMA_BASE_URL=http://192.168.65.2:11434   # адрес хоста внутри Docker Desktop VM
-OLLAMA_MODEL=qwen2.5:7b-instruct-q8_0       # рекомендуется для 8 GB VRAM
+# Ollama (primary LLM — free, local)
+OLLAMA_BASE_URL=http://192.168.65.2:11434   # host address inside Docker Desktop VM
+OLLAMA_MODEL=qwen2.5:7b-instruct-q8_0       # recommended for 8 GB VRAM
 OLLAMA_PRIMARY=true
 
-# Claude API (опционально — fallback если Ollama недоступна)
-ANTHROPIC_API_KEY=                           # оставить пустым если не нужен
+# Claude API (optional — fallback if Ollama is unavailable)
+ANTHROPIC_API_KEY=                           # leave empty to disable
 
-# Kalshi (опционально — нужен для cross-platform arb)
+# Kalshi (optional — required for cross-platform arb)
 KALSHI_API_KEY_ID=
 KALSHI_PRIVATE_KEY_PATH=
 
-# Metaculus (опционально — community predictions)
-METACULUS_API_TOKEN=...
+# Metaculus (optional — community predictions)
+METACULUS_API_TOKEN=
 
-# News
-NEWSAPI_KEY=...
+# News (required for tail risk + news divergence)
+NEWSAPI_KEY=
 
-# Пороги алертов
-ARB_MIN_EDGE_BPS=100          # минимальный кросс-платформ арбитраж (1 пп)
-SOFT_EDGE_MIN_BPS=500         # минимальный relative edge для SOFT EDGE (5%)
-SOFT_EDGE_MIN_PP=5.0          # минимальный абсолютный gap в пп
+# Alert thresholds
+ARB_MIN_EDGE_BPS=100          # min cross-platform arb edge (1 pp)
+SOFT_EDGE_MIN_BPS=500         # min relative edge for SOFT EDGE (5%)
+SOFT_EDGE_MIN_PP=5.0          # min absolute gap in percentage points
 LIQUIDITY_SPREAD_THRESHOLD=0.15
-LIQUIDITY_MIN_MID=0.10        # игнорировать рынки дешевле 10¢ или дороже 90¢
+LIQUIDITY_MIN_MID=0.10        # ignore markets below 10¢ or above 90¢
 
 # Ingest
 TOP_MARKETS_BY_VOLUME=500
-MAX_MARKETS_PER_EVENT=8       # не более N рынков из одного события
+MAX_MARKETS_PER_EVENT=8       # max markets per event (diversity filter)
 
-# Дополнительные рынки: всегда отслеживаются независимо от объёма
-# Добавить market_id через запятую. После изменения — только restart ingest (не rebuild).
-SUPPLEMENTAL_MARKET_IDS=701539,701540,...   # ETH EOY 2026
+# Supplemental markets: always tracked regardless of volume rank
+# Add market_ids comma-separated. After changing: restart ingest only (no rebuild needed).
+SUPPLEMENTAL_MARKET_IDS=701539,701540,...   # e.g. ETH EOY 2026
 ```
 
-> После изменения `SUPPLEMENTAL_MARKET_IDS` достаточно `docker compose up -d ingest` — пересборка образа не нужна.
+> After changing `SUPPLEMENTAL_MARKET_IDS`, only `docker compose up -d ingest` is needed — no image rebuild required.
 
 ---
 
-## Источники сигналов
+## Signal sources
 
-| Источник | Надёжность | Комментарий |
+| Source | Reliability | Notes |
 |---|---|---|
-| **Kalshi** (кросс-платформ арб) | ★★★★★ | Реальные деньги, механический профит. Требует API ключ |
-| **Intra-market arb** | ★★★★★ | YES+NO внутри Polymarket < $1. Без доп. ключей |
-| **Metaculus** | ★★★★☆ | Community CP, реальные форкастеры. Требует API токен выше free |
-| **PredictIt** | ★★★☆☆ | Реальные деньги. −10% комиссия на прибыль. Гео-блок вне США |
-| **Tail Risk (LLM + News)** | ★★★☆☆ | Недооценённые события 3–35%. Работает на Ollama, для срабатывания желательны свежие новости |
-| **News Divergence** | ★★★☆☆ | Сентимент новостей vs рыночная цена. Хорошо работает на макро/крипто |
-| **Manifold** | ★★☆☆☆ | Play-money (Mana). Частый recency/partisan bias |
-| **LLM Prior (Ollama/Claude)** | ★★☆☆☆ | Оценка P(YES) через LLM. Только вспомогательный сигнал |
+| **Kalshi** (cross-platform arb) | ★★★★★ | Real money, mechanical profit. Requires API key |
+| **Intra-market arb** | ★★★★★ | YES+NO inside Polymarket < $1. No extra keys needed |
+| **Metaculus** | ★★★★☆ | Community CP, real forecasters. Requires API token above free tier |
+| **PredictIt** | ★★★☆☆ | Real money. −10% fee on profit. Geo-blocked outside the US |
+| **Tail Risk (LLM + News)** | ★★★☆☆ | Underpriced events 3–35%. Runs on Ollama; fresh news recommended for signals |
+| **News Divergence** | ★★★☆☆ | News sentiment vs market price. Works well on macro/crypto |
+| **Manifold** | ★★☆☆☆ | Play-money (Mana). Frequent recency/partisan bias |
+| **LLM Prior (Ollama/Claude)** | ★★☆☆☆ | P(YES) estimate via LLM. Supporting signal only |
 
 ---
 
-## Типы алертов
+## Alert types
 
 ### ⚡ CROSS-PLATFORM ARB
 
-**Что это:** Гарантированный арбитраж — купить YES на Polymarket + NO на Kalshi суммарно дешевле $1. Прибыль при любом исходе.
+**What it is:** Guaranteed arbitrage — buy YES on Polymarket + NO on Kalshi for less than $1 combined. Profit regardless of outcome.
 
-**Требует:** Kalshi API ключ
+**Requires:** Kalshi API key
 
 ```
 ⚡ CROSS-PLATFORM ARB  +150 bps (1.5%)
@@ -231,13 +232,13 @@ For 100 contracts:
   Profit: +$0.70
 ```
 
-**Действие:** Купить обе стороны одновременно. Калши берёт комиссию ~1% — уже учтена в расчёте.
+**Action:** Buy both sides simultaneously. Kalshi charges ~1% fee — already factored into the calculation.
 
 ---
 
 ### 🔄 INTRA-MARKET ARB
 
-**Что это:** YES + NO внутри одного рынка Polymarket суммарно стоят меньше $1.
+**What it is:** YES + NO inside a single Polymarket market cost less than $1 combined.
 
 ```
 🔄 INTRA-MARKET ARB  +80 bps (0.8%)
@@ -251,39 +252,39 @@ For 100 contracts:
   Profit: +$0.50
 ```
 
-**Действие:** Купить и YES и NO токены одновременно. Пара всегда даёт $1 при резолюции.
+**Action:** Buy both YES and NO tokens simultaneously. The pair always pays $1 at resolution.
 
 ---
 
 ### 🎯 TAIL RISK — UNDERPRICED
 
-**Что это:** Рынок с вероятностью 5–25% недооценён согласно свежим новостям. Claude анализирует последние заголовки и выдаёт сигнал только при наличии конкретных фактов (confidence ≥ 0.70). Запускается раз в 2 часа.
+**What it is:** A market priced 3–35% is underpriced according to fresh news. The LLM analyzes recent headlines and signals only when concrete facts support it (confidence ≥ 0.65). Runs every 1 hour.
 
 ```
 🎯 TAIL RISK — UNDERPRICED
-Montreal Canadiens win the 2026 NHL Stanley Cup
+Will Bulgaria win Eurovision 2026?
 
 📈 BUY YES
-Market: 7.5¢  Claude: 18.0%  (confidence 85%)
-Gap: +10.5 pp  EV per $1: +1.40
-Kelly ½: 3.2% of bankroll
+Market: 6.5¢  LLM: 15.0%  (confidence 72%)
+Gap: +8.5 pp  EV per $1: +1.31
+Kelly ½: 2.8% of bankroll
 
-💡 Montreal Canadiens have taken a series lead (3-2) against Tampa Bay
+💡 Bulgaria has won the national selection with a strong jury favorite track
 🤖 Verify with news before acting
 ```
 
-**Поля:**
-- `confidence` — качество новостного покрытия: ≥0.80 = свежие конкретные факты, 0.70–0.79 = умеренные данные
-- `Kelly ½` — консервативный размер ставки (½ от полного Kelly, т.к. оценка Claude, не механический арб)
-- `⚡ Order flow confirms` — появляется, если за последний час был Price Spike или Book Imbalance по тому же рынку
+**Fields:**
+- `confidence` — quality of news coverage: ≥0.80 = fresh concrete facts, 0.65–0.79 = moderate data
+- `Kelly ½` — conservative position size (½ of full Kelly, since this is an LLM estimate, not mechanical arb)
+- `⚡ Order flow confirms` — appears if there was a Price Spike or Book Imbalance on the same market in the last hour
 
-**Когда торговать:** gap ≥ 10 пп + confidence ≥ 0.80 + проверить новости вручную.
+**When to trade:** gap ≥ 10 pp + confidence ≥ 0.80 + verify news manually.
 
 ---
 
 ### 📊 / 🤖 / 🏛️ SOFT EDGE
 
-**Что это:** Цена на Polymarket отличается от вероятности на внешней платформе или оценки Claude.
+**What it is:** Polymarket price differs from an external platform's probability or LLM estimate.
 
 ```
 📊 SOFT EDGE — MANIFOLD
@@ -297,27 +298,27 @@ Kelly ¼: 4.2% of bankroll
 ✅ Rules align
 ```
 
-**Поля:**
-- `Gap: ±X pp` — разница в процентных пунктах
-- `EV per $1` — ожидаемая прибыль на каждый вложенный доллар
-- `Kelly ¼: X%` — рекомендуемый размер ставки (¼ от полного Kelly)
+**Fields:**
+- `Gap: ±X pp` — difference in percentage points
+- `EV per $1` — expected profit per dollar wagered
+- `Kelly ¼: X%` — recommended position size (¼ of full Kelly)
 
-**Когда торговать по источнику:**
+**When to trade by source:**
 
-| Источник | Действие |
+| Source | Action |
 |---|---|
-| Metaculus CP (🎯) | Торговать при gap ≥ 5 пп, Kelly ≥ 0.5% |
-| PredictIt (🏛️) | Торговать при gap ≥ 5 пп (учти −10% fee) |
-| Manifold (📊) | Проверить вручную, малая ставка (½ от Kelly) |
-| LLM Prior (🤖) | Только информация, не торговать автоматически |
+| Metaculus CP (🎯) | Trade at gap ≥ 5 pp, Kelly ≥ 0.5% |
+| PredictIt (🏛️) | Trade at gap ≥ 5 pp (account for −10% fee) |
+| Manifold (📊) | Check manually, small position (½ of Kelly) |
+| LLM Prior (🤖) | Information only, do not trade automatically |
 
-**Размер ставки:** `Kelly ¼ (%) × депозит`. При $1000 и Kelly 2.1% → ставить $21.
+**Position size:** `Kelly ¼ (%) × bankroll`. At $1000 and Kelly 2.1% → bet $21.
 
 ---
 
 ### ⚖️ BOOK IMBALANCE
 
-**Что это:** Сильный дисбаланс на верхнем уровне книги заявок.
+**What it is:** Strong imbalance at the top level of the order book.
 
 ```
 ⚖️ BOOK IMBALANCE · No
@@ -327,17 +328,17 @@ Will the Carolina Hurricanes win the 2026 NHL Stanley Cup?
 YES: 38.5¢  Bid: $803   Ask: $8610
 ```
 
-**Интерпретация:**
-- `Bid-heavy` → давление на покупку → цена скорее вырастет
-- `Ask-heavy` → давление на продажу → цена скорее упадёт
+**Interpretation:**
+- `Bid-heavy` → buying pressure → price likely to rise
+- `Ask-heavy` → selling pressure → price likely to fall
 
-> Сам по себе не торгуется. Используй как подтверждение к SOFT EDGE или PRICE SPIKE. Ratio >10× с объёмом >$1000 — сильный сигнал.
+> Not a standalone trade signal. Use as confirmation for SOFT EDGE or PRICE SPIKE. Ratio >10× with volume >$1000 is a strong signal.
 
 ---
 
 ### 🚀 PRICE SPIKE
 
-**Что это:** Цена отклонилась от скользящего среднего на ≥3σ.
+**What it is:** Price deviated from the rolling mean by ≥3σ.
 
 ```
 🚀 PRICE SPIKE · Yes
@@ -347,13 +348,13 @@ Z-score: +3.45σ  (58 ticks)
 Now: 52.3¢   Mean: 49.1¢   ±0.93¢
 ```
 
-**Интерпретация:** Резкое движение — кто-то действует с информацией. Без контекста — часто шум. Смотри вместе с Book Imbalance и новостями.
+**Interpretation:** Sharp move — someone is acting on information. Without context, often noise. Check together with Book Imbalance and news.
 
 ---
 
 ### 📐 WIDE SPREAD
 
-**Что это:** Спред между bid и ask >15% от midpoint — рынок неликвиден.
+**What it is:** Spread between bid and ask is >15% of midpoint — the market is illiquid.
 
 ```
 📐 WIDE SPREAD · Yes
@@ -363,22 +364,22 @@ Spread: 8.0¢  (18.2% of mid)
 Bid: 35.0¢   Ask: 43.0¢
 ```
 
-**Действие:** Не торговать — при входе сразу теряешь половину спреда.
+**Action:** Do not trade — you immediately lose half the spread on entry.
 
 ---
 
 ### 🔢 SUM DEVIATION
 
-**Что это:** YES + NO мид отличаются от $1 более чем на порог.
+**What it is:** YES + NO mid deviates from $1 beyond threshold.
 
-- `Sum < 1` (📉) → купить YES+NO bundle (intra-market arb)
-- `Sum > 1` (📈) → рынок перегрет
+- `Sum < 1` (📉) → buy YES+NO bundle (intra-market arb)
+- `Sum > 1` (📈) → market is overpriced
 
 ---
 
 ### 📰 NEWS DIVERGENCE
 
-**Что это:** Сентимент свежих новостей расходится с рыночной ценой. Детектор читает последние статьи по рынку, скорит каждую (−1..+1), считает EMA сентимента и сравнивает с market_p.
+**What it is:** Recent news sentiment diverges from market price. The detector reads the latest articles for the market, scores each one (−1..+1), computes EMA sentiment, and compares with market price.
 
 ```
 📰 NEWS DIVERGENCE  (conf 85%)
@@ -393,167 +394,166 @@ Articles scored: 10
 🤖 Verify news before acting
 ```
 
-**Поля:**
-- `Sentiment EMA` — экспоненциальная скользящая средняя по оценкам новостей (отрицательный = медвежий тон)
-- `conf X%` — уверенность сигнала (≥80% = сильный сигнал)
-- `Bearish / Bullish` — направление: Bearish → рынок перегрет (BUY NO), Bullish → рынок недооценён (BUY YES)
+**Fields:**
+- `Sentiment EMA` — exponential moving average of article scores (negative = bearish tone)
+- `conf X%` — signal confidence (≥80% = strong signal)
+- `Bearish / Bullish` — direction: Bearish → market overpriced (BUY NO), Bullish → market underpriced (BUY YES)
 
-**Когда торговать:**
-- Уверенность ≥ 80%
-- Sentiment EMA < −0.40 (Bearish) или > +0.40 (Bullish)
-- Совпадает с другим сигналом (Soft Edge или Tail Risk)
-- Проверь вручную: новости актуальны, не устарели
+**When to trade:**
+- Confidence ≥ 80%
+- Sentiment EMA < −0.40 (Bearish) or > +0.40 (Bullish)
+- Aligns with another signal (Soft Edge or Tail Risk)
+- Verify manually: news is current, not stale
 
-> 🤖 Источник новостей — NewsAPI + RSS. Могут попасть нерелевантные статьи. Всегда проверяй `reason` и заголовки перед ставкой.
+> News source is NewsAPI + RSS. Irrelevant articles may appear. Always check the `reason` and headlines before trading.
 
 ---
 
-## Пары рынков (market_matches)
+## Market pairs (market_matches)
 
-### Ручные пары (`manual_map.yaml`)
+### Manual pairs (`manual_map.yaml`)
 
 ```yaml
 markets:
   - key: my_market_key
-    polymarket: "123456"             # market_id из БД
-    manifold: "some-manifold-slug"   # slug из URL manifold.markets/...
-    # manifold: "slug#AnswerText"    # для multi-choice рынков
-    metaculus: 12345                 # ID вопроса
+    polymarket: "123456"             # market_id from DB
+    manifold: "some-manifold-slug"   # slug from manifold.markets/... URL
+    # manifold: "slug#AnswerText"    # for multi-choice markets
+    metaculus: 12345                 # question ID
     predictit: "market_id/contract_id"
-    notes: "Описание различий в правилах"
+    notes: "Notes on resolution rule differences"
 
-  # Standalone запись (только polymarket) — попадает в /list и news_divergence,
-  # но не даёт cross-platform soft_edge (нет внешней пары для сравнения)
+  # Standalone entry (Polymarket only) — appears in /list and news_divergence,
+  # but does not generate cross-platform soft_edge (no external pair to compare)
   - key: eth_dip_1500_dec2026
     polymarket: "701552"
     notes: "ETH dip to $1,500 by Dec 31, 2026. (844k vol)"
 ```
 
-**Покрытые рынки:**
-- Геополитика: Иран, Украина, Китай-Тайвань, Израиль-Саудовская Аравия
-- Макро: ФРС (ставки 2026), рецессия США
-- Крипто: **16 ETH EOY 2026** (`eth_reach_3500…10000`, `eth_dip_800…2500`), BTC $150k
-- Спорт: NBA Finals 2026 (OKC), FIFA World Cup 2026 (Франция, Аргентина, Бразилия)
-- AI: OpenAI IPO, лучшая модель AI (Anthropic vs OpenAI vs xAI)
-- Политика США: выборы 2028 (Трамп, Вэнс, Ньюсом)
+**Covered markets:**
+- Geopolitics: Iran, Ukraine, China-Taiwan, Israel-Saudi Arabia
+- Macro: Fed (2026 rates), US recession
+- Crypto: **16 ETH EOY 2026** (`eth_reach_3500…10000`, `eth_dip_800…2500`), BTC $150k
+- Sports: NBA Finals 2026 (OKC), FIFA World Cup 2026 (France, Argentina, Brazil)
+- AI: OpenAI IPO, best AI model (Anthropic vs OpenAI vs xAI)
+- US Politics: 2028 elections (Trump, Vance, Newsom)
 
-После изменения YAML — обязательно пересобрать:
+After changing the YAML — always rebuild:
 
 ```bash
 docker compose build matcher
 docker compose up -d matcher
 ```
 
-> ⚠️ `docker compose restart matcher` **не поможет** — YAML запекается в образ при сборке.
+> `docker compose restart matcher` **will not work** — the YAML is baked into the image at build time.
 
-### Авто-матчинг
+### Auto-matching
 
-| Пара | Интервал | LLM |
+| Pair | Interval | LLM |
 |---|---|---|
-| Polymarket ↔ Kalshi | каждые 30 мин | Claude (fallback: Ollama) |
-| Polymarket ↔ Manifold | каждые 6 часов | Claude (fallback: Ollama) |
+| Polymarket ↔ Kalshi | every 30 min | Ollama (fallback: Claude) |
+| Polymarket ↔ Manifold | every 6 hours | Ollama (fallback: Claude) |
 
-Пары с уверенностью ≥85% активируются автоматически (`approved_by = 'auto'`).
-Пары с уверенностью <85% → `approved_by = 'pending'` (нужна ручная проверка).
+Pairs with confidence ≥ 85% are activated automatically (`approved_by = 'auto'`).
+Pairs with confidence < 85% → `approved_by = 'pending'` (manual review needed).
 
 ---
 
-## Команды бота в Telegram
+## Telegram commands
 
-| Команда | Описание |
+| Command | Description |
 |---|---|
-| `/start` | Начало работы |
-| `/status` | Состояние сервисов + последний алерт |
-| `/list` | Все отслеживаемые рынки (разбивается на страницы если > ~70) |
-| `/calibration` | Точность модели (Brier score) |
-| `/explain <alert_id>` | Детальный разбор алерта по ID |
-| `/watch <slug>` | Добавить рынок по slug |
-| `/pause <2h>` | Заглушить все алерты на время |
-| `/resume` | Возобновить алерты |
-| `/threshold arb <bps>` | Изменить порог арбитража |
-| `/threshold soft <bps>` | Изменить порог soft edge |
+| `/start` | Start |
+| `/status` | Service status + last alert |
+| `/list` | All tracked markets (paginated if > ~70) |
+| `/calibration` | Model accuracy (Brier score) |
+| `/explain <alert_id>` | Detailed breakdown of an alert by ID |
+| `/watch <slug>` | Add a market by slug |
+| `/pause <2h>` | Mute all alerts for a period |
+| `/resume` | Resume alerts |
+| `/threshold arb <bps>` | Change arbitrage threshold |
+| `/threshold soft <bps>` | Change soft edge threshold |
 
-`group_key` виден в каждом алерте или в БД: `SELECT DISTINCT group_key FROM alerts`.
+`group_key` is visible in each alert or in DB: `SELECT DISTINCT group_key FROM alerts`.
 
-Кнопки под каждым алертом:
-- **Polymarket ↗** — открыть рынок (где применимо)
-- **Mute 1h** / **Mute forever** — заглушить этот рынок
+Buttons under each alert:
+- **Polymarket ↗** — open market page
+- **Mute 1h** / **Mute forever** — silence this market
 
 ---
 
-## Дедупликация алертов
+## Alert deduplication
 
-Повторные алерты одного типа по одному рынку подавляются. Ключ дедупа для фундаментальных сигналов — только `kind:group_key` (без размера edge), чтобы ±50 bps дрейф не создавал новые дубли.
+Repeated alerts of the same type for the same market are suppressed. The dedup key for fundamental signals uses only `kind:group_key` (without edge size), so ±50 bps drift does not generate duplicates.
 
-| Тип | Минимальный интервал | Edge в ключе? |
+| Type | Min interval | Edge in key? |
 |---|---|---|
-| `arb_xplatform`, `arb_intramarket` | 30 мин | ✅ (50 bps bucket) |
-| `price_spike`, `sum_deviation` | 30 мин | ✅ (50 bps bucket) |
-| `book_imbalance` | 1 час | ❌ |
-| `wide_spread` | 2 часа | ❌ |
-| `soft_edge_predictit` | 2 часа | ❌ |
-| `soft_edge_manifold`, `soft_edge_metaculus` | 4 часа | ❌ |
-| `soft_edge_llm_prior` | 6 часов | ❌ |
-| `tail_risk` | 6 часов | ❌ |
-| `news_divergence` | 12 часов | ❌ |
+| `arb_xplatform`, `arb_intramarket` | 30 min | ✅ (50 bps bucket) |
+| `price_spike`, `sum_deviation` | 30 min | ✅ (50 bps bucket) |
+| `book_imbalance` | 1 hour | ❌ |
+| `wide_spread` | 2 hours | ❌ |
+| `soft_edge_predictit` | 2 hours | ❌ |
+| `soft_edge_manifold`, `soft_edge_metaculus` | 4 hours | ❌ |
+| `soft_edge_llm_prior` | 6 hours | ❌ |
+| `tail_risk` | 6 hours | ❌ |
+| `news_divergence` | 12 hours | ❌ |
 
 ---
 
-## Мониторинг
+## Monitoring
 
 ```bash
-# Логи в реальном времени
+# Live logs
 docker compose logs -f detectors
 docker compose logs -f bot
 
-# Все алерты за последний час
-docker exec polysentinel-db-1 psql -U postgres polysentinel \
+# All alerts from the last hour
+docker exec polymarket-sentinel-db-1 psql -U postgres polysentinel \
   -c "SELECT kind, group_key, edge_bps, payload->>'title', ts
       FROM alerts ORDER BY ts DESC LIMIT 20;"
 
-# Активные пары рынков
-docker exec polysentinel-db-1 psql -U postgres polysentinel \
+# Active market pairs
+docker exec polymarket-sentinel-db-1 psql -U postgres polysentinel \
   -c "SELECT group_key, source, source_id, approved_by
       FROM market_matches ORDER BY group_key, source;"
 
-# Потребление памяти контейнеров
+# Container memory usage
 docker stats --no-stream
 
-# Кеш LLM prior
-docker exec polysentinel-redis-1 redis-cli KEYS "llm_prior:*"
-
+# LLM prior cache
+docker exec polymarket-sentinel-redis-1 redis-cli KEYS "llm_prior:*"
 ```
 
-### Лимиты памяти контейнеров
+### Container memory limits
 
-Docker Desktop VM рекомендуется ограничить **8–16 GB** (Settings → Resources → Memory).
+Docker Desktop VM is recommended to be limited to **8–16 GB** (Settings → Resources → Memory).
 
-| Контейнер | Реальный пик | Лимит |
+| Container | Actual peak | Limit |
 |---|---|---|
-| `db` | ~400MB | 2GB |
-| `redis` | 512MB (self-cap) | 768MB |
-| `ingest` | ~150MB | 768MB |
-| `detectors` | ~120MB | 768MB |
-| `bot` | ~200MB | 512MB |
-| `matcher` | ~2.4GB (при запуске embedding) | 8GB |
-| **Итого реально** | **~3.6GB** | — |
+| `db` | ~400 MB | 2 GB |
+| `redis` | 512 MB (self-capped) | 768 MB |
+| `ingest` | ~150 MB | 768 MB |
+| `detectors` | ~120 MB | 768 MB |
+| `bot` | ~200 MB | 512 MB |
+| `matcher` | ~2.4 GB (on embedding run) | 8 GB |
+| **Total actual** | **~3.6 GB** | — |
 
 ---
 
-## Базовые правила торговли
+## Trading rules
 
-1. **Арб — торговать всегда** при edge ≥ 1 пп, нет зависимости от прогноза
-2. **SOFT EDGE торговать только если** gap ≥ 5 пп, Kelly ≥ 0.5%, mid между 15¢ и 85¢
-3. **TAIL RISK торговать только если** gap ≥ 10 пп + confidence ≥ 0.80 + проверить новости вручную
-4. **NEWS DIVERGENCE торговать только если** conf ≥ 80% + sentiment EMA > 0.40 + совпадает с другим сигналом
-5. **Проверяй notes в YAML** — разные правила резолюции делают сравнение бессмысленным
-6. **Manifold на политике далёкого горизонта (>1 год) — не торговать**: recency bias и отсутствие финансового стимула
-7. **LLM Prior — только информация**, никогда не единственное основание для ставки
-8. **Book Imbalance и Price Spike** — не торговые сигналы сами по себе, только подтверждение
-9. **Kelly ¼** — консервативная оценка. Никогда не ставь полный Kelly на play-money источник
-10. **Мути шумные рынки**: `/mute <group_key> forever`
-11. **Позиционные ставки (tail risk, ETH)** — горизонт недели/месяцы. Цена двигается при прохождении раунда плей-офф, выходе ключевых новостей, или при резолюции. Не продавать на шуме ±2%.
+1. **Arb — always trade** at edge ≥ 1 pp; outcome-independent mechanical profit
+2. **SOFT EDGE — trade only if** gap ≥ 5 pp, Kelly ≥ 0.5%, mid between 15¢ and 85¢
+3. **TAIL RISK — trade only if** gap ≥ 10 pp + confidence ≥ 0.80 + verify news manually
+4. **NEWS DIVERGENCE — trade only if** conf ≥ 80% + sentiment EMA > 0.40 + aligns with another signal
+5. **Check notes in YAML** — different resolution rules make comparisons meaningless
+6. **Manifold on distant-horizon politics (>1 year) — do not trade**: recency bias and no financial incentive
+7. **LLM Prior — information only**, never the sole basis for a trade
+8. **Book Imbalance and Price Spike** — not standalone trade signals; use as confirmation only
+9. **Kelly ¼** — conservative estimate. Never bet full Kelly on a play-money source
+10. **Mute noisy markets**: `/mute <group_key> forever`
+11. **Positional bets (tail risk, ETH)** — horizon of weeks/months. Price moves at playoff round results, key news, or resolution. Do not sell on ±2% noise.
 
-### Рынки "before GTA VI" (Jesus, Russia-Ukraine ceasefire и др.)
+### "Before GTA VI" markets (Jesus, Russia-Ukraine ceasefire, etc.)
 
-Это косвенная ставка на дату выхода GTA VI (~осень 2026). NO означает "GTA VI выйдет раньше, чем произойдёт X". Если выход GTA VI подтверждён → все NO позиции близки к резолюции. YES = вечная задержка.
+These are an indirect bet on the GTA VI release date (~fall 2026). NO means "GTA VI releases before X happens." If GTA VI release is confirmed → all NO positions approach resolution. YES = indefinite delay.
