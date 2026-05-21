@@ -1,0 +1,20 @@
+# Local dev overrides — NOT for production.
+# Exposes service metrics ports on localhost for direct scraping/debugging.
+# Automatically merged by docker compose when both files are present.
+
+services:
+  ingest:
+    ports:
+      - "127.0.0.1:8000:8000"   # Prometheus metrics
+
+  detectors:
+    ports:
+      - "127.0.0.1:8001:8001"
+
+  bot:
+    ports:
+      - "127.0.0.1:8002:8002"
+
+  matcher:
+    ports:
+      - "127.0.0.1:8003:8003"

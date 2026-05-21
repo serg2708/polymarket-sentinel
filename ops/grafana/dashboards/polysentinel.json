@@ -1,0 +1,71 @@
+{
+  "title": "PolySentinel",
+  "uid": "polysentinel-main",
+  "schemaVersion": 38,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Alerts per minute (by kind)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(polysentinel_alerts_total[1m])",
+          "legendFormat": "{{kind}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Price tick ingestion rate",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(polysentinel_price_ticks_total[1m])",
+          "legendFormat": "{{source}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "WS reconnect count (24h)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "increase(polysentinel_ws_reconnects_total[24h])"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Approved market pairs",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 8, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "polysentinel_approved_pairs"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Ingest latency (ms)",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(polysentinel_ingest_latency_seconds_bucket[5m])) * 1000",
+          "legendFormat": "p99"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(polysentinel_ingest_latency_seconds_bucket[5m])) * 1000",
+          "legendFormat": "p50"
+        }
+      ]
+    }
+  ]
+}

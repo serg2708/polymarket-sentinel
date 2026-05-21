@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'timescaledb'
+    static_configs:
+      - targets: ['db:9187']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:9121']
+
+  - job_name: 'polysentinel_ingest'
+    static_configs:
+      - targets: ['ingest:8000']
+
+  - job_name: 'polysentinel_detectors'
+    static_configs:
+      - targets: ['detectors:8001']
+
+  - job_name: 'polysentinel_bot'
+    static_configs:
+      - targets: ['bot:8002']

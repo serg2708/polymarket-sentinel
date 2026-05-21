@@ -1,0 +1,384 @@
+# Manual cross-platform market mapping
+# polymarket: market_id (number from DB)
+# manifold:   Manifold market slug (use "slug#Answer" for MULTIPLE_CHOICE markets)
+# metaculus:  Metaculus question ID (number)  [requires "forecaster" API tier]
+# predictit:  PredictIt "market_id/contract_id" (requires US IP to fetch)
+#             Find IDs at https://www.predictit.org/api/marketdata/all/
+# notes:      Resolution rule differences — READ before trading!
+
+markets:
+
+  # ── SPORTS / NBA ──────────────────────────────────────────────────────────
+  - key: okc_thunder_nba_2026
+    polymarket: "553856"
+    manifold: "will-the-oklahoma-city-thunder-win-CCIzPRynLd"
+    notes: "Both: OKC Thunder win 2026 NBA Finals. Rules should align."
+
+  # ── SPORTS / FIFA WORLD CUP 2026 ──────────────────────────────────────────
+  - key: france_world_cup_2026
+    polymarket: "558936"
+    manifold: "will-france-win-the-world-cup-2NlSChqcy6"
+    notes: "Both: France wins 2026 FIFA World Cup. Rules align."
+
+  - key: argentina_world_cup_2026
+    polymarket: "558938"
+    manifold: "will-argentina-win-the-2026-fifa-wo"
+    notes: "Both: Argentina wins 2026 FIFA World Cup. Rules align."
+
+  - key: brazil_world_cup_2026
+    polymarket: "558937"
+    notes: "Brazil wins 2026 FIFA World Cup. No direct Manifold match found."
+
+  # ── GEOPOLITICS / RUSSIA-UKRAINE ─────────────────────────────────────────
+  - key: ukraine_ceasefire_gta6
+    polymarket: "540816"
+    manifold: "ukraine-war-ends-in-2026"
+    notes: >
+      RULE DIFF: Polymarket = ceasefire before GTA VI release (~Nov 2026).
+      Manifold = war ends in 2026 calendar year. Similar but not identical.
+      Large gap (Poly ~55% vs Manifold ~17%) likely reflects rule difference.
+
+  - key: ukraine_ceasefire_2026
+    polymarket: "567687"
+    manifold: "will-russia-and-ukraine-agree-to-a-Ozp6Qgsl5d"
+    notes: >
+      Polymarket = Russia x Ukraine ceasefire by end of 2026.
+      Manifold: "Will Russia and Ukraine agree to a ceasefire before August 1, 2026?" p≈0.12.
+      RULE DIFF: Manifold closes Aug 1 2026, Polymarket extends to end of 2026 — gap expected.
+
+  - key: ukraine_peace_deal_2027
+    polymarket: "665224"
+    notes: >
+      Polymarket = Ukraine signs peace deal with Russia before 2027.
+      No verified Manifold/Metaculus counterpart found with matching scope.
+
+  - key: zelenskyy_out_2026
+    polymarket: "567689"
+    notes: >
+      Polymarket = Zelenskyy out as Ukraine president by end 2026.
+      No verified Manifold counterpart found — skip for now.
+
+  - key: putin_out_2026
+    polymarket: "560317"
+    notes: >
+      Polymarket = Putin out as President by December 31, 2026 (~YES = Putin leaves).
+      No verified Manifold counterpart found. Metaculus IDs unverified.
+
+  - key: ukraine_joins_nato_2027
+    polymarket: "665495"
+    notes: >
+      Polymarket = Ukraine joins NATO before 2027.
+      No verified external counterpart. Likely very low prob (~5-10%).
+
+  - key: us_russia_military_clash_2026
+    polymarket: "648872"
+    notes: >
+      Polymarket = US x Russia military clash by June 30, 2026.
+      No verified Manifold/Metaculus counterpart found.
+
+  # ── GEOPOLITICS / CHINA-TAIWAN ────────────────────────────────────────────
+  - key: china_taiwan_gta6
+    polymarket: "540843"
+    manifold: "will-china-militarily-seize-any-of-6dad798706d5"
+    notes: >
+      RULE DIFF: Polymarket = China invades Taiwan before GTA VI (~Nov 2026).
+      Manifold = seize outlying islands (Kinmen/Matsu) by end of 2026.
+      Completely different scenarios — treat as soft signal only.
+      Gap: Poly ~50% vs Manifold ~9.5%.
+
+  - key: china_invades_taiwan_2026
+    polymarket: "567621"
+    manifold: "will-china-launch-a-military-operat"
+    notes: >
+      Polymarket = China invades Taiwan by end of 2026.
+      Manifold: "Will China launch a military operation against Taiwan in 2026?" p≈0.10 (close Jan 2027).
+      Rules approximately aligned — "military operation" ≈ "invasion".
+
+  # ── GEOPOLITICS / IRAN ────────────────────────────────────────────────────
+  - key: us_invades_iran_2027
+    polymarket: "665374"
+    manifold: "will-the-us-invade-iran-before-the-zs06u6hptc"
+    notes: >
+      Polymarket = Will the U.S. invade Iran before 2027? (222K 24h vol — very active).
+      Manifold: "Will the US invade Iran before the end of 2026?" p≈0.26 (close Jan 2027).
+      High volume suggests significant market disagreement worth monitoring.
+
+  - key: us_iran_nuclear_deal_2027
+    polymarket: "665325"
+    manifold: "will-the-us-and-iran-reach-a-formal"
+    notes: >
+      Polymarket = US-Iran nuclear deal before 2027 (49K 24h vol).
+      Manifold: "Will the US and Iran reach a formal nuclear deal framework by Jul 1 2026?" p≈0.29.
+      RULE DIFF: Manifold closes Jul 2026, Polymarket extends to 2027 — longer timeframe inflates Poly price.
+
+  - key: iran_regime_falls_2027
+    polymarket: "663583"
+    manifold: "will-the-iranian-regime-fall-by-end"
+    notes: >
+      Polymarket = Will the Iranian regime fall before 2027? (21K 24h vol).
+      Manifold: "Will the Iranian regime fall by end of June?" p≈0.036 (close Jul 2026).
+      RULE DIFF: Manifold closes June 2026, Polymarket extends to 2027. Gap expected — not arb.
+
+  - key: iran_nuclear_test_2027
+    polymarket: "665521"
+    notes: >
+      Polymarket = Iran nuclear test before 2027 (616 24h vol).
+      Low volume — no verified counterpart found. Skip for now.
+
+  - key: us_withdraw_nato_2027
+    polymarket: "665480"
+    notes: >
+      Polymarket = Will US withdraw from NATO before 2027 (2.6K 24h vol).
+      No verified Manifold counterpart found for US NATO withdrawal by 2027.
+
+  # ── GEOPOLITICS / MIDDLE EAST ─────────────────────────────────────────────
+  - key: israel_saudi_normalize_2027
+    polymarket: "665218"
+    manifold: "israel-and-saudi-arabia-establish-d"
+    notes: >
+      Polymarket = Israel and Saudi Arabia normalize relations before 2027.
+      Manifold: "Israel and Saudi Arabia establish diplomatic relations before Israel's elections?" p≈0.24 (close Oct 2026).
+      RULE DIFF: Manifold asks about "before Israeli elections", Polymarket asks "before 2027" — similar but different trigger event.
+
+  # ── MACROECONOMICS / US ECONOMY ───────────────────────────────────────────
+  - key: us_recession_2026
+    polymarket: "609655"
+    manifold: "will-the-us-enter-a-recession-in-20"
+    notes: >
+      Polymarket = US recession by end of 2026 (2.2K 24h vol, 1.4M total vol).
+      Manifold: "Will the US enter a recession in 2026?" p≈0.27 — VERIFIED slug.
+      Manifold real-money recession consensus is a strong signal here.
+
+  - key: fed_rate_cuts_0_2026
+    polymarket: "616902"
+    manifold: "how-many-net-fed-rate-cuts-in-2026#0 cuts (Target 3.50-3.75)"
+    notes: >
+      Polymarket = Will no Fed rate cuts happen in 2026? (15.8K 24h vol).
+      Manifold: multi-choice "How many net Fed rate cuts in 2026?" — "0 cuts" answer p≈0.51.
+      Uses slug#Answer syntax to extract "0 cuts" answer from MULTIPLE_CHOICE market.
+      Strong calibration signal: Manifold community gives 51% to zero cuts.
+
+  - key: fed_rate_cuts_6_2026
+    polymarket: "616908"
+    notes: >
+      Polymarket = Will 6 Fed rate cuts happen in 2026? (37.5K 24h vol — most active bracket).
+      No direct Manifold/Metaculus counterpart identified yet.
+      Key market to watch: currently most liquid Fed cuts bracket.
+
+  - key: fed_rate_cuts_8_2026
+    polymarket: "616910"
+    notes: >
+      Polymarket = Will 8 Fed rate cuts happen in 2026? (48K 24h vol — highest in bracket).
+      No direct counterpart identified. Monitor for cross-venue gaps.
+
+  # ── AI / TECHNOLOGY ───────────────────────────────────────────────────────
+  - key: gpt6_before_gta6
+    polymarket: "573647"
+    notes: >
+      Polymarket = Will GPT-6 be released before GTA VI? (~629K total vol).
+      No verified Manifold counterpart found for GPT-6 specifically before GTA VI.
+      High total vol — worth monitoring for Kalshi cross-platform arb instead.
+
+  - key: openai_ipo_dec2026
+    polymarket: "656312"
+    manifold: "will-openai-ipo-and-be-a-publicly-t-585cd5ee0be9"
+    notes: >
+      Polymarket = Will OpenAI IPO by December 31 2026? (3.4K 24h vol).
+      Manifold: "Will OpenAI IPO and be publicly traded in the US by Nov 2026?" p≈0.10 (close Nov 2026).
+      Watch: Polymarket also has an IPO market cap series (608362-608368).
+
+  - key: openai_ipo_above_1t25
+    polymarket: "608366"
+    notes: >
+      Polymarket = OpenAI IPO market cap between $1.25T and $1.5T on IPO day (1.8K 24h vol).
+      Most liquid of the market cap bracket series. No direct counterpart yet.
+
+  - key: openai_agi_announced_2027
+    polymarket: "653788"
+    notes: >
+      Polymarket = OpenAI announces AGI before 2027 (158 24h vol).
+      No verified Manifold/Metaculus counterpart found for OpenAI-specific AGI announcement by 2027.
+      Low volume — skip for now.
+
+  - key: best_ai_model_anthropic_jun2026
+    polymarket: "631140"
+    manifold: "which-company-has-the-best-ai-model-tN0h8n0yzQ#Anthropic"
+    notes: >
+      Polymarket = Will Anthropic have the best AI model at end of June 2026? (6.6K 24h vol).
+      Manifold: multi-choice "Which company has the best AI model end of June 2026?" — Anthropic answer p≈0.58.
+      Uses slug#Answer syntax to extract Anthropic answer probability from MULTIPLE_CHOICE market.
+
+  - key: best_ai_model_xai_jun2026
+    polymarket: "631144"
+    manifold: "which-company-has-the-best-ai-model-tN0h8n0yzQ#xAI"
+    notes: >
+      Polymarket = Will xAI have the best AI model at end of June 2026? (7.3K 24h vol).
+      Manifold: multi-choice "Which company has the best AI model?" — xAI answer p≈0.015.
+      Uses slug#Answer syntax to extract xAI answer from MULTIPLE_CHOICE market.
+
+  - key: best_ai_model_openai_jun2026
+    polymarket: "631139"
+    manifold: "which-company-has-the-best-ai-model-tN0h8n0yzQ#OpenAI"
+    notes: >
+      Polymarket = Will OpenAI have the best AI model at end of June 2026?
+      Manifold: multi-choice — OpenAI answer p≈0.125.
+      Uses slug#Answer syntax to extract OpenAI answer from MULTIPLE_CHOICE market.
+
+  # ── CRYPTO / ETHEREUM EOY 2026 (what-price-will-ethereum-hit-before-2027) ──
+  - key: eth_reach_10000_dec2026
+    polymarket: "701539"
+    notes: "ETH reach $10,000 by Dec 31, 2026. (358k vol)"
+  - key: eth_reach_8000_dec2026
+    polymarket: "701540"
+    notes: "ETH reach $8,000 by Dec 31, 2026. (197k vol)"
+  - key: eth_reach_7500_dec2026
+    polymarket: "701541"
+    notes: "ETH reach $7,500 by Dec 31, 2026. (107k vol)"
+  - key: eth_reach_7000_dec2026
+    polymarket: "701542"
+    notes: "ETH reach $7,000 by Dec 31, 2026. (130k vol)"
+  - key: eth_reach_6500_dec2026
+    polymarket: "701543"
+    notes: "ETH reach $6,500 by Dec 31, 2026. (165k vol)"
+  - key: eth_reach_6000_dec2026
+    polymarket: "701544"
+    notes: "ETH reach $6,000 by Dec 31, 2026. (261k vol)"
+  - key: eth_reach_5500_dec2026
+    polymarket: "701545"
+    notes: "ETH reach $5,500 by Dec 31, 2026. (162k vol)"
+  - key: eth_reach_5000_dec2026
+    polymarket: "701546"
+    notes: "ETH reach $5,000 by Dec 31, 2026. (338k vol)"
+  - key: eth_reach_4500_dec2026
+    polymarket: "701547"
+    notes: "ETH reach $4,500 by Dec 31, 2026. (137k vol)"
+  - key: eth_reach_4000_dec2026
+    polymarket: "701548"
+    notes: "ETH reach $4,000 by Dec 31, 2026. (136k vol)"
+  - key: eth_reach_3500_dec2026
+    polymarket: "701549"
+    notes: "ETH reach $3,500 by Dec 31, 2026. (273k vol)"
+  - key: eth_dip_2500_dec2026
+    polymarket: "701550"
+    notes: "ETH dip to $2,500 by Dec 31, 2026. (372k vol)"
+  - key: eth_dip_2000_dec2026
+    polymarket: "701551"
+    notes: "ETH dip to $2,000 by Dec 31, 2026. (182k vol)"
+  - key: eth_dip_1500_dec2026
+    polymarket: "701552"
+    notes: "ETH dip to $1,500 by Dec 31, 2026. (844k vol)"
+  - key: eth_dip_1000_dec2026
+    polymarket: "701553"
+    notes: "ETH dip to $1,000 by Dec 31, 2026. (519k vol)"
+  - key: eth_dip_800_dec2026
+    polymarket: "701554"
+    notes: "ETH dip to $800 by Dec 31, 2026. (473k vol)"
+
+  # ── CRYPTO ────────────────────────────────────────────────────────────────
+  - key: bitcoin_150k_jun2026
+    polymarket: "573655"
+    notes: >
+      Polymarket = Will Bitcoin hit $150k by June 30, 2026? (15.7M total vol).
+      No verified Manifold counterpart for June deadline found.
+      Use bitcoin-150k-in-2026 (Dec deadline) for calibration instead.
+
+  - key: bitcoin_150k_dec2026
+    polymarket: "573656"
+    manifold: "bitcoin-150k-in-2026"
+    notes: >
+      Polymarket = Will Bitcoin hit $150k by December 31, 2026? (292K total vol).
+      Manifold: "Bitcoin $150K in 2026?" p≈0.065 (close Jan 2027).
+      Rules align — both track $150k threshold by end of 2026.
+
+  - key: china_unban_bitcoin_2027
+    polymarket: "665258"
+    notes: >
+      Polymarket = Will China unban Bitcoin by 2027? (181 24h vol).
+      Low volume — no verified Manifold counterpart found. Skip for now.
+
+  - key: us_bitcoin_reserve_2027
+    polymarket: "665205"
+    notes: >
+      Polymarket = US national Bitcoin reserve before 2027 (32K vol).
+      No verified Manifold counterpart found — US strategic reserve already created by EO.
+      Check if Polymarket question is about expansion/formalization.
+
+  # ── US POLITICS ───────────────────────────────────────────────────────────
+  - key: trump_impeached_2nd_term
+    manifold: "will-donald-trump-be-impeached-duri"
+    notes: "No direct Polymarket match found in top-200. Manifold only for now."
+
+  # ── 2028 ELECTIONS — REPUBLICAN PRIMARY ──────────────────────────────────
+  - key: trump_2028_rep_nom
+    polymarket: "561973"
+    manifold: "will-donald-trump-be-the-republican-a872c5a307ed"
+    notes: >
+      Both: Trump wins 2028 Republican presidential nomination.
+      Manifold ~7.6%. Watch for gaps vs Polymarket.
+
+  - key: jd_vance_2028_rep_nom
+    polymarket: "561974"
+    manifold: "will-trumps-vice-president-pick-in"
+    notes: >
+      Polymarket: Vance wins 2028 Republican nom.
+      Manifold: "Will JD Vance be the presidential nominee in 2028?" (~41.5%).
+      Rules essentially identical.
+
+  - key: ivanka_trump_2028_president
+    polymarket: "561255"
+    manifold: "will-ivanka-trump-be-elected-presid"
+    notes: "Very low prob (~1-2%). Useful for calibration, not arb."
+
+  - key: donald_trump_jr_2028_president
+    polymarket: "561244"
+    manifold: "will-any-trump-run-against-any-obam"
+    notes: "Manifold question scope broader than Polymarket."
+
+  # ── 2028 ELECTIONS — DEMOCRATIC PRIMARY ──────────────────────────────────
+  - key: gavin_newsom_2028_dem_nom
+    polymarket: "559652"
+    manifold: "will-gavin-newsom-be-the-democratic-d7975b1db008"
+    notes: >
+      Both: Newsom wins 2028 Democratic presidential nomination.
+      Manifold ~26.7%. Watch for gaps vs Polymarket.
+
+  # ── PREDICTIT / US POLITICS (real money, requires US IP) ─────────────────
+  # PredictIt market IDs can be verified at:
+  #   https://www.predictit.org/api/marketdata/all/
+  # Format: "market_id" (binary) or "market_id/contract_id" (specific contract)
+
+  - key: house_control_2026_predictit
+    polymarket: "547606"
+    predictit: "7456"
+    notes: >
+      Polymarket = Which party controls the US House after 2026 midterms?
+      PredictIt market 7456: "Which party will control the House after 2026 midterms?"
+      RULE DIFF: Polymarket may have separate binary markets per party.
+      Verify contract ID for Democrats/Republicans at predictit.org/api/marketdata/markets/7456/
+
+  - key: senate_control_2026_predictit
+    polymarket: "547607"
+    predictit: "7455"
+    notes: >
+      Polymarket = Which party controls the US Senate after 2026 midterms?
+      PredictIt market 7455: "Which party will control the Senate after 2026 midterms?"
+      Same RULE DIFF as House market above.
+      Verify contract IDs at predictit.org/api/marketdata/markets/7455/
+
+  - key: trump_approval_predictit
+    polymarket: "558847"
+    predictit: "7314"
+    notes: >
+      Polymarket = Trump approval rating above X% by date (check exact Polymarket question).
+      PredictIt market 7314 tracks Trump job approval ranges.
+      RULE DIFF: Polymarket likely binary (above/below threshold) vs PredictIt bracket.
+      Verify exact contract ID — may need "market_id/contract_id" format.
+
+  - key: us_recession_2026_predictit
+    polymarket: "609655"
+    predictit: "7549"
+    notes: >
+      Polymarket = US enters recession in 2026 (1.4M total vol).
+      PredictIt market 7549 (approximate) — they may have a recession market.
+      Verify ID at predictit.org — search "recession 2026".
+      Strong signal if both real-money markets diverge.

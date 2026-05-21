@@ -1,0 +1,41 @@
+# Secrets — never commit
+.env
+*.pem
+*.key
+kalshi_private*
+
+# Old project copy
+polysentinel/
+
+# Personal notes / drafts
+TG polybot.txt
+Building Polymarket Mispricing Bot.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Jupyter
+notebooks/.ipynb_checkpoints/
+
+# IDE / OS
+.vercel/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+сщтеусые
+
+# Claude Code session files
+.claude/
