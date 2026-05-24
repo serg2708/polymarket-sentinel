@@ -402,16 +402,18 @@ Pairs with confidence < 85% → `approved_by = 'pending'` (manual review needed)
 
 | Command | Description |
 |---|---|
-| `/start` | Start |
-| `/status` | Service status + last alert |
-| `/list` | All tracked markets (paginated if > ~70) |
-| `/calibration` | Model accuracy (Brier score) |
-| `/explain <alert_id>` | Detailed breakdown of an alert by ID |
-| `/watch <slug>` | Add a market by slug |
-| `/pause <2h>` | Mute all alerts for a period |
-| `/resume` | Resume alerts |
+| `/start` | List all commands |
+| `/status` | Ingest health + last alert |
+| `/positions` | Current Polymarket portfolio |
+| `/list` | Watched markets + thresholds (paginated if > ~70) |
+| `/watch <slug>` | Add a market by slug or group key |
+| `/unwatch <slug>` | Remove a market from the watchlist |
+| `/pause <2h \| 30m \| 1d>` | Mute all alerts for a period |
+| `/resume` | Resume paused alerts |
 | `/threshold arb <bps>` | Change arbitrage threshold |
 | `/threshold soft <bps>` | Change soft edge threshold |
+| `/calibration` | Model accuracy (Brier score) |
+| `/explain <alert_id>` | Detailed breakdown of an alert by ID |
 
 `group_key` is visible in each alert or in DB: `SELECT DISTINCT group_key FROM alerts`.
 

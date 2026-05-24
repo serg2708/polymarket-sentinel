@@ -18,6 +18,7 @@ import structlog
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from ..common.db import get_pool, close_pool
@@ -154,6 +155,20 @@ async def main() -> None:
     pool = await get_pool()
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     bot = _make_bot()
+
+    await bot.set_my_commands([
+        BotCommand(command="status",      description="Ingest health + last alert"),
+        BotCommand(command="positions",   description="Current Polymarket portfolio"),
+        BotCommand(command="list",        description="Watched markets + thresholds"),
+        BotCommand(command="watch",       description="Add market by slug"),
+        BotCommand(command="unwatch",     description="Remove market from watchlist"),
+        BotCommand(command="pause",       description="Pause alerts (e.g. 2h, 30m, 1d)"),
+        BotCommand(command="resume",      description="Resume paused alerts"),
+        BotCommand(command="threshold",   description="Set alert threshold (arb/soft <bps>)"),
+        BotCommand(command="calibration", description="Model accuracy (Brier score)"),
+        BotCommand(command="explain",     description="Verbose breakdown of an alert by ID"),
+    ])
+
     dp = Dispatcher()
     dp.include_router(router)
 
