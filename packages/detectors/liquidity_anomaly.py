@@ -2,7 +2,6 @@
 
 Detects signals that often precede or reveal mispricings:
 - Wide spread relative to midpoint
-- Severe top-of-book imbalance
 - Z-score price spike
 - Volume spike
 - Stale book
@@ -95,30 +94,6 @@ def check_spread(
     return None
 
 
-def check_book_imbalance(
-    bid_size: float | None,
-    ask_size: float | None,
-    imbalance_ratio: float = 5.0,
-    min_side_size: float = 50.0,  # shares (contracts), not dollars
-) -> dict | None:
-    if bid_size is None or ask_size is None or ask_size == 0 or bid_size == 0:
-        return None
-    # Require the smaller side to have meaningful liquidity (filters ghost imbalances)
-    if min(bid_size, ask_size) < min_side_size:
-        return None
-    ratio = bid_size / ask_size if bid_size > ask_size else ask_size / bid_size
-    direction = "bid_heavy" if bid_size > ask_size else "ask_heavy"
-    if ratio >= imbalance_ratio:
-        return {
-            "kind": "book_imbalance",
-            "bid_size": round(bid_size, 2),
-            "ask_size": round(ask_size, 2),
-            "ratio": round(ratio, 2),
-            "direction": direction,
-        }
-    return None
-
-
 def check_z_score(
     token_id: str,
     current_mid: float,
@@ -159,10 +134,6 @@ def check_all(
     s = check_spread(best_bid, best_ask, spread_threshold)
     if s:
         hits.append(s)
-
-    i = check_book_imbalance(bid_size, ask_size, imbalance_ratio)
-    if i:
-        hits.append(i)
 
     if mid is not None:
         z = check_z_score(token_id, mid, z_threshold)

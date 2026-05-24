@@ -316,67 +316,6 @@ Kelly ¼: 4.2% of bankroll
 
 ---
 
-### ⚖️ BOOK IMBALANCE
-
-**What it is:** Strong imbalance at the top level of the order book.
-
-```
-⚖️ BOOK IMBALANCE · No
-Will the Carolina Hurricanes win the 2026 NHL Stanley Cup?
-
-📉 Bearish — buying NO  10.6×
-YES: 38.5¢  Bid: $803   Ask: $8610
-```
-
-**Interpretation:**
-- `Bid-heavy` → buying pressure → price likely to rise
-- `Ask-heavy` → selling pressure → price likely to fall
-
-> Not a standalone trade signal. Use as confirmation for SOFT EDGE or PRICE SPIKE. Ratio >10× with volume >$1000 is a strong signal.
-
----
-
-### 🚀 PRICE SPIKE
-
-**What it is:** Price deviated from the rolling mean by ≥3σ.
-
-```
-🚀 PRICE SPIKE · Yes
-Will Bitcoin hit $1M before GTA VI?
-
-Z-score: +3.45σ  (58 ticks)
-Now: 52.3¢   Mean: 49.1¢   ±0.93¢
-```
-
-**Interpretation:** Sharp move — someone is acting on information. Without context, often noise. Check together with Book Imbalance and news.
-
----
-
-### 📐 WIDE SPREAD
-
-**What it is:** Spread between bid and ask is >15% of midpoint — the market is illiquid.
-
-```
-📐 WIDE SPREAD · Yes
-Will France win the 2026 FIFA World Cup?
-
-Spread: 8.0¢  (18.2% of mid)
-Bid: 35.0¢   Ask: 43.0¢
-```
-
-**Action:** Do not trade — you immediately lose half the spread on entry.
-
----
-
-### 🔢 SUM DEVIATION
-
-**What it is:** YES + NO mid deviates from $1 beyond threshold.
-
-- `Sum < 1` (📉) → buy YES+NO bundle (intra-market arb)
-- `Sum > 1` (📈) → market is overpriced
-
----
-
 ### 📰 NEWS DIVERGENCE
 
 **What it is:** Recent news sentiment diverges from market price. The detector reads the latest articles for the market, scores each one (−1..+1), computes EMA sentiment, and compares with market price.
@@ -489,9 +428,6 @@ Repeated alerts of the same type for the same market are suppressed. The dedup k
 | Type | Min interval | Edge in key? |
 |---|---|---|
 | `arb_xplatform`, `arb_intramarket` | 30 min | ✅ (50 bps bucket) |
-| `price_spike`, `sum_deviation` | 30 min | ✅ (50 bps bucket) |
-| `book_imbalance` | 1 hour | ❌ |
-| `wide_spread` | 2 hours | ❌ |
 | `soft_edge_predictit` | 2 hours | ❌ |
 | `soft_edge_manifold`, `soft_edge_metaculus` | 4 hours | ❌ |
 | `soft_edge_llm_prior` | 6 hours | ❌ |
@@ -549,10 +485,9 @@ Docker Desktop VM is recommended to be limited to **8–16 GB** (Settings → Re
 5. **Check notes in YAML** — different resolution rules make comparisons meaningless
 6. **Manifold on distant-horizon politics (>1 year) — do not trade**: recency bias and no financial incentive
 7. **LLM Prior — information only**, never the sole basis for a trade
-8. **Book Imbalance and Price Spike** — not standalone trade signals; use as confirmation only
-9. **Kelly ¼** — conservative estimate. Never bet full Kelly on a play-money source
-10. **Mute noisy markets**: `/mute <group_key> forever`
-11. **Positional bets (tail risk, ETH)** — horizon of weeks/months. Price moves at playoff round results, key news, or resolution. Do not sell on ±2% noise.
+8. **Kelly ¼** — conservative estimate. Never bet full Kelly on a play-money source
+9. **Mute noisy markets**: `/mute <group_key> forever`
+10. **Positional bets (tail risk, ETH)** — horizon of weeks/months. Price moves at playoff round results, key news, or resolution. Do not sell on ±2% noise.
 
 ### "Before GTA VI" markets (Jesus, Russia-Ukraine ceasefire, etc.)
 

@@ -50,7 +50,6 @@ async def snapshot_calibration(pool, redis_client, market_id: str,
                                 model_p=model_p, market_p=market_p, model_kind=model_kind)
 from .arb_xplatform import Leg, find_arb
 from .arb_intramarket import find_intramarket_arb
-from .liquidity_anomaly import check_all as check_liquidity
 from .soft_edge import metaculus_soft_edge, manifold_soft_edge, predictit_soft_edge, llm_prior_soft_edge
 from .news_divergence import run_news_divergence_check
 
@@ -70,10 +69,6 @@ _DEDUP_TTL: dict[str, int] = {
     "soft_edge_llm_prior":21600,  # 6 h — same as LLM cache TTL
     "tail_risk":          21600,  # 6 h
     "news_divergence":    43200,  # 12 h — sentiment shifts slowly
-    "book_imbalance":     3600,   # 1 h
-    "wide_spread":        7200,   # 2 h
-    "price_spike":        1800,
-    "sum_deviation":      1800,
 }
 _DEDUP_TTL_DEFAULT = 1800
 
@@ -84,8 +79,6 @@ _DEDUP_TTL_DEFAULT = 1800
 _EDGE_BUCKET: dict[str, int] = {
     "arb_xplatform":      50,
     "arb_intramarket":    50,
-    "price_spike":        50,
-    "sum_deviation":      50,
     # Everything else defaults to 0 → no edge component in dedup key
 }
 
@@ -252,65 +245,6 @@ async def run_intramarket_detection(pool: asyncpg.Pool, redis_client) -> None:
                 await push_alert(redis_client, alert)
                 await insert_alert(pool, "arb_intramarket", group_key, alert, result["edge_bps"])
                 log.info("intra_arb_alert", group_key=group_key, edge_bps=result["edge_bps"])
-
-
-# ── Liquidity anomalies ───────────────────────────────────────────────────
-
-async def run_liquidity_detection(pool: asyncpg.Pool, redis_client) -> None:
-    rows = await pool.fetch(
-        """
-        SELECT DISTINCT ON (p.token_id)
-          p.token_id, p.best_bid, p.best_ask, p.bid_size_top, p.ask_size_top, p.mid,
-          m.question, m.market_id, t.outcome,
-          COALESCE(m.raw->'events'->0->>'slug', m.slug) AS event_slug
-        FROM prices p
-        JOIN tokens t ON t.token_id = p.token_id
-        JOIN markets m ON m.market_id = t.market_id
-        WHERE p.source = 'polymarket' AND p.ts > now() - INTERVAL '5 minutes'
-        ORDER BY p.token_id, p.ts DESC
-        LIMIT 200
-        """
-    )
-    blocked = _blocked_ids()
-    min_mid = settings.liquidity_min_mid
-    for r in rows:
-        if str(r["market_id"]) in blocked:
-            continue
-        def _f(v): return float(v) if v is not None else None
-        mid = _f(r["mid"])
-        if mid is None or mid < min_mid or mid > (1.0 - min_mid):
-            continue
-        hits = check_liquidity(
-            token_id=r["token_id"],
-            best_bid=_f(r["best_bid"]),
-            best_ask=_f(r["best_ask"]),
-            bid_size=_f(r["bid_size_top"]),
-            ask_size=_f(r["ask_size_top"]),
-            spread_threshold=settings.liquidity_spread_threshold,
-        )
-        best_bid = _f(r["best_bid"]) or 0.5
-        best_ask = _f(r["best_ask"]) or 0.5
-        for hit in hits:
-            group_key = f"liq:{r['token_id'][:16]}"
-            if await should_send(redis_client, hit["kind"], group_key, 0):
-                # Convert share counts → dollar amounts for display; attach mid
-                if hit["kind"] == "book_imbalance":
-                    hit = {
-                        **hit,
-                        "bid_size": round(hit["bid_size"] * best_bid),
-                        "ask_size": round(hit["ask_size"] * best_ask),
-                        "mid": mid,
-                    }
-                alert = {
-                    **hit,
-                    "group_key": group_key,
-                    "token_id": r["token_id"],
-                    "title": r["question"] or r["token_id"],
-                    "outcome": r["outcome"],
-                    "poly_url": f"https://polymarket.com/event/{r['event_slug']}" if r["event_slug"] else None,
-                }
-                await push_alert(redis_client, alert)
-                log.debug("liquidity_alert", kind=hit["kind"])
 
 
 # ── Soft-edge (Metaculus + Manifold vs Polymarket) ────────────────────────
@@ -804,19 +738,6 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
         if claude_p < poly_p * 1.25 or edge_pp_check < 3.0:
             continue
 
-        # Check for recent order flow confirmation (price spike or book imbalance in last hour)
-        flow_row = await pool.fetchrow(
-            """
-            SELECT kind FROM alerts
-            WHERE kind IN ('price_spike', 'book_imbalance')
-              AND ts > now() - INTERVAL '1 hour'
-              AND payload->>'title' = $1
-            ORDER BY ts DESC LIMIT 1
-            """,
-            question,
-        )
-        has_order_flow = flow_row is not None
-
         edge_pp = (claude_p - poly_p) * 100
         ev = (claude_p - poly_p) / poly_p
         kf = kelly_fraction(claude_p, poly_p) * 0.5  # halve Kelly: Claude estimate, not certainty
@@ -843,7 +764,6 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
                 "edge_pp": round(edge_pp, 1),
                 "ev_per_dollar": round(ev, 4),
                 "kelly_fraction": round(kf, 4),
-                "has_order_flow": has_order_flow,
                 "poly_url": f"https://polymarket.com/event/{event_slug}" if event_slug else None,
             }
             await push_alert(redis_client, alert)
@@ -888,10 +808,9 @@ async def detection_loop(pool: asyncpg.Pool, redis_client) -> None:
         while True:
             t0 = time.monotonic()
             try:
-                # Fast path: arb + liquidity every tick (5s)
+                # Fast path: arb every tick (5s)
                 fast_tasks = [
                     run_intramarket_detection(pool, redis_client),
-                    run_liquidity_detection(pool, redis_client),
                     update_queue_gauge(redis_client),
                 ]
                 if kalshi_client:

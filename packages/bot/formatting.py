@@ -23,10 +23,6 @@ KIND_EMOJI = {
     "soft_edge_llm_prior": "🤖",
     "soft_edge_predictit": "🏛️",
     "tail_risk":           "🎯",
-    "wide_spread":        "📐",
-    "book_imbalance":     "⚖️",
-    "price_spike":        "🚀",
-    "sum_deviation":      "🔢",
     "news_divergence":    "📰",
 }
 
@@ -131,77 +127,6 @@ def format_soft_edge(a: dict) -> str:
     )
 
 
-def format_liquidity_alert(a: dict) -> str:
-    kind    = a.get("kind", "")
-    emoji   = KIND_EMOJI.get(kind, "📐")
-    title   = a.get("title") or a.get("token_id", "unknown")
-    outcome = a.get("outcome", "")
-    body = ""
-
-    if kind == "wide_spread":
-        spread_c = a.get("spread", 0) * 100
-        rel_pct  = a.get("rel_spread", 0) * 100
-        body = (
-            f"Spread: <code>{spread_c:.1f}¢</code>  "
-            f"({rel_pct:.1f}% of mid)\n"
-            f"Bid: <code>{_c(a.get('best_bid', 0))}</code>  "
-            f"Ask: <code>{_c(a.get('best_ask', 0))}</code>\n"
-        )
-
-    elif kind == "book_imbalance":
-        direction = a.get("direction", "")
-        token = (outcome or "").lower()  # "yes" or "no"
-        buying_yes = (direction == "bid_heavy" and token == "yes") or \
-                     (direction == "ask_heavy" and token == "no")
-        raw_mid = float(a.get("mid") or 0)
-        yes_price = raw_mid if token == "yes" else (1.0 - raw_mid)
-        ratio = a.get("ratio", 0)
-        bid = a.get("bid_size", 0)
-        ask = a.get("ask_size", 0)
-        if buying_yes:
-            body = (
-                f"📈 Smart money backing YES  <code>{ratio:.1f}×</code>\n"
-                f"YES @ <code>{_c(yes_price)}</code>  Volume: <code>${max(bid, ask):.0f}</code>\n"
-            )
-        else:
-            body = (
-                f"📉 Smart money backing NO  <code>{ratio:.1f}×</code>\n"
-                f"YES @ <code>{_c(yes_price)}</code>  Volume: <code>${max(bid, ask):.0f}</code>\n"
-            )
-        outcome = ""
-
-    elif kind == "price_spike":
-        current = float(a.get("current_mid") or 0)
-        mean    = float(a.get("rolling_mean") or 0)
-        std     = float(a.get("rolling_std") or 0)
-        n       = int(a.get("n_samples") or 0)
-        body = (
-            f"Z-score: <code>{a.get('z_score', 0):+.2f}σ</code>  "
-            f"({n} ticks)\n"
-            f"Now: <code>{_c(current)}</code>  "
-            f"Mean: <code>{_c(mean)}</code>  "
-            f"±<code>{std * 100:.2f}¢</code>\n"
-        )
-
-    elif kind == "sum_deviation":
-        yes_mid = float(a.get("yes_mid") or 0)
-        no_mid  = float(a.get("no_mid") or 0)
-        total   = float(a.get("total") or 0)
-        dev_bps = int(a.get("deviation_bps") or 0)
-        dir_txt = "📉 Sum < 1  (buy YES+NO bundle)" if a.get("direction") == "under" else "📈 Sum > 1"
-        body = (
-            f"{dir_txt}\n"
-            f"YES: <code>{_c(yes_mid)}</code>  "
-            f"NO: <code>{_c(no_mid)}</code>  "
-            f"Sum: <code>{total * 100:.1f}¢</code>  "
-            f"Δ <code>{dev_bps} bps</code>\n"
-        )
-
-    outcome_tag = f" · <code>{e(outcome)}</code>" if outcome else ""
-    header = f"{emoji} <b>{e(kind.upper().replace('_', ' '))}</b>{outcome_tag}\n<b>{e(title)}</b>\n"
-    return header + body
-
-
 def format_tail_risk(a: dict) -> str:
     market_p   = float(a.get("market_p") or 0)
     claude_p   = float(a.get("claude_p") or 0)
@@ -210,9 +135,7 @@ def format_tail_risk(a: dict) -> str:
     ev         = float(a.get("ev_per_dollar") or 0)
     kelly_pct  = float(a.get("kelly_fraction") or 0) * 100
     key_signal = a.get("key_signal") or ""
-    has_flow   = a.get("has_order_flow", False)
 
-    flow_line = "⚡ Order flow confirms — unusual buying pressure\n" if has_flow else ""
     # Suggested bet: $5–$50 range based on confidence
     if confidence >= 0.90:
         suggest = "$20–$50"
@@ -231,7 +154,6 @@ def format_tail_risk(a: dict) -> str:
         f"Confidence: <code>{confidence * 100:.0f}%</code>  "
         f"Kelly ½: <code>{kelly_pct:.1f}%</code>\n\n"
         f"💡 {e(key_signal)}\n"
-        + flow_line
         + f"💰 Suggested bet: <b>{suggest}</b> YES  (→ Polymarket ↑)\n"
     )
 
@@ -286,8 +208,6 @@ def format_alert(a: dict) -> str:
         return format_soft_edge(a)
     elif kind == "tail_risk":
         return format_tail_risk(a)
-    elif kind in ("wide_spread", "book_imbalance", "price_spike", "sum_deviation"):
-        return format_liquidity_alert(a)
     elif kind == "news_divergence":
         return format_news_divergence(a)
     else:

@@ -7,8 +7,6 @@ Also detects multi-outcome negRisk incomplete-set opportunities.
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 
 def find_intramarket_arb(
     yes_asks: list[tuple[float, float]],
@@ -47,29 +45,3 @@ def find_intramarket_arb(
     }
 
 
-def check_sum_deviation(
-    yes_mid: float | None,
-    no_mid: float | None,
-    threshold_bps: int = 200,
-) -> dict | None:
-    """
-    Alert when YES_mid + NO_mid deviates significantly from 1.0.
-    This is a softer signal than a full book walk.
-    """
-    if yes_mid is None or no_mid is None:
-        return None
-    total = yes_mid + no_mid
-    if total <= 0:
-        return None
-    deviation_bps = int(abs(1.0 - total) * 10000)
-    if deviation_bps < threshold_bps:
-        return None
-    direction = "under" if total < 1.0 else "over"
-    return {
-        "kind": "sum_deviation",
-        "yes_mid": yes_mid,
-        "no_mid": no_mid,
-        "total": round(total, 4),
-        "deviation_bps": deviation_bps,
-        "direction": direction,
-    }
