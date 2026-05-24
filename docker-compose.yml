@@ -73,25 +73,26 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  matcher:
-    build:
-      context: .
-      dockerfile: packages/matcher/Dockerfile
-    depends_on:
-      db:
-        condition: service_healthy
-    env_file: .env
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "4.0"
-          memory: 8G     # peak ~2.4GB (embedding model), 3× headroom
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "3"
+  # matcher disabled — Kalshi not used, no cross-platform arb pairs to match
+  # matcher:
+  #   build:
+  #     context: .
+  #     dockerfile: packages/matcher/Dockerfile
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   env_file: .env
+  #   restart: unless-stopped
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "4.0"
+  #         memory: 8G
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "20m"
+  #       max-file: "3"
 
   detectors:
     build:
