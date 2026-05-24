@@ -110,11 +110,6 @@ async def alert_consumer(bot: Bot, redis_client) -> None:
                 log.debug("alert_dropped_paused", kind=alert.get("kind"))
                 continue
 
-            # Quiet hours check (CET = UTC+1, CEST = UTC+2 in summer)
-            if _is_quiet_hours():
-                log.debug("alert_dropped_quiet_hours", kind=alert.get("kind"))
-                continue
-
             # Per-group mute fast path (Redis)
             group_key = alert.get("group_key", "")
             muted = await redis_client.get(f"mute:{group_key}")

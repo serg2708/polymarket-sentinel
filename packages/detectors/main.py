@@ -16,6 +16,7 @@ import hashlib
 import json
 import signal
 import time
+import traceback
 from datetime import datetime, timezone
 
 import asyncpg
@@ -590,7 +591,7 @@ async def run_news_detection(pool: asyncpg.Pool, redis_client) -> None:
 
 # ── Calibration snapshot (hourly) ─────────────────────────────────────────
 
-async def run_calibration_snapshots(pool: asyncpg.Pool) -> None:
+async def run_calibration_snapshots(pool: asyncpg.Pool, redis_client) -> None:
     """Snapshot market_p for all tracked tokens once per hour."""
     rows = await pool.fetch(
         """
@@ -835,10 +836,11 @@ async def detection_loop(pool: asyncpg.Pool, redis_client) -> None:
 
                 # Hourly: calibration snapshots
                 if tick % 720 == 0:
-                    await run_calibration_snapshots(pool)
+                    await run_calibration_snapshots(pool, redis_client)
 
             except Exception as exc:
-                log.error("detection_loop_error", error=str(exc), tick=tick)
+                log.error("detection_loop_error", error=str(exc), tick=tick,
+                          traceback=traceback.format_exc())
 
             elapsed = time.monotonic() - t0
             DETECTION_LOOP_DURATION.observe(elapsed)
