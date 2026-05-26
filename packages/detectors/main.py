@@ -442,15 +442,14 @@ async def run_llm_prior_detection(pool: asyncpg.Pool, redis_client) -> None:
           COALESCE(m.raw->'events'->0->>'slug', m.slug) AS event_slug,
           p.mid AS poly_mid
         FROM markets m
-        JOIN prices p ON p.token_id IN (
-          SELECT token_id FROM tokens WHERE market_id = m.market_id AND outcome = 'Yes'
-        )
+        JOIN tokens t ON t.market_id = m.market_id AND t.outcome = 'Yes'
+        JOIN prices p ON p.token_id = t.token_id
         WHERE m.source = 'polymarket'
           AND m.active = true
           AND p.ts > now() - INTERVAL '6 hours'
           AND p.mid BETWEEN $1 AND $2
           AND (m.raw->>'volume')::float > 20000
-        ORDER BY m.market_id, p.ts DESC, (m.raw->>'volume')::float DESC
+        ORDER BY m.market_id, p.ts DESC
         LIMIT 120
         """,
         settings.liquidity_min_mid,
@@ -657,15 +656,14 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
           COALESCE(m.raw->'events'->0->>'slug', m.slug) AS event_slug,
           p.mid AS poly_mid
         FROM markets m
-        JOIN prices p ON p.token_id IN (
-          SELECT token_id FROM tokens WHERE market_id = m.market_id AND outcome = 'Yes'
-        )
+        JOIN tokens t ON t.market_id = m.market_id AND t.outcome = 'Yes'
+        JOIN prices p ON p.token_id = t.token_id
         WHERE m.source = 'polymarket'
           AND m.active = true
           AND p.ts > now() - INTERVAL '6 hours'
           AND p.mid BETWEEN 0.03 AND 0.35
           AND (m.raw->>'volume')::float > 20000
-        ORDER BY m.market_id, p.ts DESC, (m.raw->>'volume')::float DESC
+        ORDER BY m.market_id, p.ts DESC
         LIMIT 100
         """,
     )
