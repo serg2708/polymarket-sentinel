@@ -95,7 +95,7 @@ def format_soft_edge(a: dict) -> str:
     ev         = float(a.get("ev_per_dollar") or 0)
     kelly_pct  = float(a.get("kelly_fraction") or 0) * 100
 
-    if ev > 0:
+    if edge_pp > 0:
         direction = "📈 Under-priced → BUY YES"
         kelly_label = f"Kelly ¼: <code>{kelly_pct:.1f}%</code> of bankroll"
     else:

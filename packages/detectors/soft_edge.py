@@ -29,7 +29,7 @@ def compute_ev(model_p: float, market_ask: float) -> dict | None:
         # Approximate NO ask as complement of YES ask (valid when spread is tight).
         no_ask = 1.0 - market_ask
         no_prob = 1.0 - model_p
-        ev_per_dollar = -((market_ask - model_p) / market_ask)  # negative = BUY NO
+        ev_per_dollar = (no_prob - no_ask) / no_ask  # positive, from NO perspective
         kf = kelly_fraction(no_prob, no_ask)
 
     return {
