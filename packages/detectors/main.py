@@ -67,9 +67,9 @@ _DEDUP_TTL: dict[str, int] = {
     "soft_edge_manifold": 14400,  # 4 h — Manifold prices barely change hourly
     "soft_edge_metaculus":14400,
     "soft_edge_predictit":7200,   # 2 h
-    "soft_edge_llm_prior":21600,  # 6 h — same as LLM cache TTL
-    "tail_risk":          21600,  # 6 h
-    "news_divergence":    43200,  # 12 h — sentiment shifts slowly
+    "soft_edge_llm_prior":86400,  # 24 h — survives overnight PC restart
+    "tail_risk":          86400,  # 24 h — same reason
+    "news_divergence":    86400,  # 24 h — sentiment rarely flips in a day
 }
 _DEDUP_TTL_DEFAULT = 1800
 
