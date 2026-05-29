@@ -67,9 +67,9 @@ _DEDUP_TTL: dict[str, int] = {
     "soft_edge_manifold": 14400,  # 4 h — Manifold prices barely change hourly
     "soft_edge_metaculus":14400,
     "soft_edge_predictit":7200,   # 2 h
-    "soft_edge_llm_prior":86400,  # 24 h — survives overnight PC restart
-    "tail_risk":          86400,  # 24 h — same reason
-    "news_divergence":    86400,  # 24 h — sentiment rarely flips in a day
+    "soft_edge_llm_prior":21600,  # 6 h
+    "tail_risk":          21600,  # 6 h
+    "news_divergence":    43200,  # 12 h
 }
 _DEDUP_TTL_DEFAULT = 1800
 
@@ -492,7 +492,7 @@ async def run_llm_prior_detection(pool: asyncpg.Pool, redis_client) -> None:
         hit = llm_prior_soft_edge(
             llm_p, poly_ask,
             min_edge_bps=settings.soft_edge_min_bps,
-            min_edge_pp=settings.soft_edge_min_pp,
+            min_edge_pp=10.0,  # require ≥10 pp gap for LLM-only signals
         )
         if not hit:
             continue
