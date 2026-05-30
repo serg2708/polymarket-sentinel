@@ -76,8 +76,8 @@ async def cmd_positions(msg: Message):
             outcome = p.get("outcome", "?")
             size = float(p.get("size") or p.get("shares") or 0)
             avg_price = float(p.get("avgPrice") or p.get("averagePrice") or 0)
-            cur_price = float(p.get("currentPrice") or avg_price)
-            cur_value = float(p.get("currentValue") or size * cur_price)
+            cur_value = float(p.get("currentValue") or 0) or (size * avg_price)
+            cur_price = float(p.get("currentPrice") or (cur_value / size if size > 0 else avg_price))
             cost = size * avg_price
             pnl = cur_value - cost
             pnl_sign = "+" if pnl >= 0 else ""
