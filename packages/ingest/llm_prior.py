@@ -24,6 +24,24 @@ log = structlog.get_logger()
 LLM_PRIOR_TTL = 6 * 3600   # 6 hours per market
 REDIS_PREFIX = "llm_prior:"
 
+# Shared guard against the most common multi-bracket failure: folding
+# "the event probably won't happen" into the lowest numeric bracket. On
+# Polymarket these are SEPARATE outcomes — "No IPO / did not happen" is its
+# own ticket and never pays the "< $X" bracket.
+BRACKET_RULES = """\
+CRITICAL — bracketed / multi-outcome markets:
+- If this question is ONE bracket of a set (e.g. "market cap between $X and $Y",
+  "less than $X", a specific numeric range, "between A and B"), it resolves YES
+  ONLY IF the underlying event actually happens AND the measured value lands in
+  THIS exact bracket.
+- A separate "No event / No IPO / did not occur by <date>" outcome is its OWN
+  ticket. NEVER fold "the event probably will not happen" into a low numeric
+  bracket. "Event won't occur" pays the No-event outcome, NOT the lowest number.
+- For a "less than $X" bracket: YES needs the event to occur AND land below $X.
+  If $X is far below a recent known reference (last funding round / valuation /
+  price), a YES here is a down-round / collapse scenario and is VERY unlikely
+  even if the event itself is uncertain. Treat such brackets as low probability."""
+
 PRIOR_PROMPT = """\
 Today is {today}. You are a well-calibrated forecaster.
 
@@ -35,6 +53,8 @@ Question: {question}
 Resolution criteria: {resolution}
 
 {news_block}
+
+{bracket_rules}
 
 Reply ONLY with valid JSON, no markdown:
 {{"probability": <0.00-1.00>, "confidence": <0.0-1.0>, "brief_reason": "<1 sentence>"}}
@@ -56,6 +76,34 @@ _LOW_QUALITY_SOURCES = {
     "zerohedge", "zerohedge.com",
     "infowars", "breitbart",
 }
+
+# Numeric money/threshold detection for the bracket sanity gate
+_MONEY_RE = re.compile(r"\$\s?\d[\d.,]*\s?(?:billion|trillion|million|[bmt])\b", re.IGNORECASE)
+_BRACKET_RE = re.compile(
+    r"\b(between|less than|greater than|at least|no more than|or greater|or more|"
+    r"or less|below|above|under|over)\b", re.IGNORECASE)
+_NO_EVENT_RE = re.compile(
+    r"\bif no\b|\bno ipo\b|\bdoes not\b|\bno such\b|did not (?:occur|happen)|"
+    r'resolve(?:s|d)? to ["\']?no\b', re.IGNORECASE)
+_LOW_BRACKET_RE = re.compile(
+    r"\b(less than|below|under|no more than|or less)\b\s*\$?\s?\d", re.IGNORECASE)
+
+
+def is_multibracket_numeric(question: str, description: str) -> bool:
+    """True when a market is one numeric bracket of a multi-outcome set that
+    ALSO has a separate 'No event' outcome — the structure where an LLM tends
+    to fold 'event won't happen' into the lowest number bracket."""
+    text = f"{question}\n{description}"
+    has_money = bool(_MONEY_RE.search(text))
+    has_bracket = bool(_BRACKET_RE.search(text))
+    has_no_event = bool(_NO_EVENT_RE.search(description or ""))
+    return has_money and has_bracket and has_no_event
+
+
+def is_low_numeric_bracket(question: str) -> bool:
+    """True for the lowest 'less than $X' bracket — the one most often mis-mapped."""
+    return bool(_LOW_BRACKET_RE.search(question or ""))
+
 
 def _article_date(a: dict) -> str:
     """Return ISO date string from whichever date field the article uses."""
@@ -93,12 +141,13 @@ def _build_prompt(question: str, description: str, news: list[dict], today: str)
         )
         news_block = NEWS_BLOCK_TEMPLATE.format(headlines=headlines)
 
-    resolution = (description or "")[:800] or "Same as question title."
+    resolution = (description or "")[:1000] or "Same as question title."
     return PRIOR_PROMPT.format(
         today=today,
         question=question[:300],
         resolution=resolution,
         news_block=news_block,
+        bracket_rules=BRACKET_RULES,
     )
 
 
@@ -239,6 +288,8 @@ Resolution criteria: {resolution}
 
 {news_block}
 
+{bracket_rules}
+
 Your task: determine whether this event is MORE likely than {market_p_pct}% given
 current available information.
 
@@ -305,13 +356,14 @@ async def estimate_tail_risk(
         )
         news_block = f"Recent relevant headlines (newest first):\n{headlines}"
 
-    resolution = (description or "")[:800] or "Same as question title."
+    resolution = (description or "")[:1000] or "Same as question title."
     prompt = TAIL_RISK_PROMPT.format(
         today=today,
         market_p_pct=round(market_p * 100, 1),
         question=question[:300],
         resolution=resolution,
         news_block=news_block,
+        bracket_rules=BRACKET_RULES,
     )
 
     if settings.nvidia_api_key:
@@ -331,6 +383,17 @@ async def estimate_tail_risk(
 
     if not (0.02 <= p <= 0.80):
         return None
+
+    # Sanity gate: tail risk always fires "underpriced → BUY YES". On the lowest
+    # numeric bracket of a multi-outcome market ("< $X" with a separate "No event"
+    # outcome), an underpriced YES is almost always the LLM folding "event won't
+    # happen" into the low bracket — a phantom edge. Suppress and flag for review.
+    if underpriced and is_multibracket_numeric(question, description) and is_low_numeric_bracket(question):
+        log.warning("tail_risk_bracket_suppressed", market_id=market_id,
+                    question=question[:80], claude_p=round(p, 3),
+                    reason="low numeric bracket of multi-outcome market — "
+                           "likely 'no event' conflated into '< $X'; manual review")
+        underpriced = False
 
     log.info("tail_risk_estimated", market_id=market_id,
              market_p=round(market_p, 3), claude_p=round(p, 3),

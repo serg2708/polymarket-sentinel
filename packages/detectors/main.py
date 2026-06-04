@@ -37,7 +37,12 @@ from ..ingest.kalshi import KalshiClient, kalshi_book_to_no_asks
 from ..ingest.metaculus import get_question as get_metaculus_question
 from ..ingest.manifold import get_market_by_slug as get_manifold_market
 from ..ingest.predictit import get_contract as get_predictit_contract
-from ..ingest.llm_prior import estimate_probability as llm_estimate, estimate_tail_risk
+from ..ingest.llm_prior import (
+    estimate_probability as llm_estimate,
+    estimate_tail_risk,
+    is_multibracket_numeric,
+    is_low_numeric_bracket,
+)
 from ..models.calibration import snapshot_calibration as _snapshot_calibration, mark_resolved
 
 
@@ -487,6 +492,21 @@ async def run_llm_prior_detection(pool: asyncpg.Pool, redis_client) -> None:
         # Require meaningful confidence — 0.70 still guards against pure guessing
         if confidence < 0.70:
             log.debug("llm_prior_low_confidence", market_id=market_id, confidence=confidence)
+            continue
+
+        # Sanity gate: on the lowest numeric bracket of a multi-outcome market
+        # ("< $X" with a separate "No event" outcome), a prior ABOVE market means
+        # BUY YES — almost always the LLM folding "event won't happen" into the
+        # low bracket. Suppress that direction; a prior below market (BUY NO) is fine.
+        description = row["description"] or ""
+        if (llm_p > poly_ask
+                and is_multibracket_numeric(question, description)
+                and is_low_numeric_bracket(question)):
+            log.warning("llm_prior_bracket_suppressed", market_id=market_id,
+                        question=question[:80], llm_p=round(llm_p, 3),
+                        poly_ask=round(poly_ask, 3),
+                        reason="low numeric bracket — likely 'no event' conflated "
+                               "into '< $X'; manual review")
             continue
 
         hit = llm_prior_soft_edge(
