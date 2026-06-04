@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone, timedelta
 
 import structlog
 
@@ -49,13 +50,46 @@ Recent relevant headlines (newest first):
 {headlines}
 """
 
+_LOW_QUALITY_SOURCES = {
+    "nakedcapitalism", "nakedcapitalism.com",
+    "unbiasthenews", "unbiasthenews.com",
+    "zerohedge", "zerohedge.com",
+    "infowars", "breitbart",
+}
+
+def _article_date(a: dict) -> str:
+    """Return ISO date string from whichever date field the article uses."""
+    return (a.get("published_at") or a.get("published") or a.get("publishedAt") or "")[:10]
+
+def _filter_news(news: list[dict], max_age_days: int = 7) -> list[dict]:
+    """Remove stale and low-quality articles."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    out = []
+    for a in news:
+        src = (a.get("source") or "").lower()
+        if any(bad in src for bad in _LOW_QUALITY_SOURCES):
+            continue
+        date_str = _article_date(a)
+        if date_str:
+            try:
+                pub = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                if pub.tzinfo is None:
+                    pub = pub.replace(tzinfo=timezone.utc)
+                if pub < cutoff:
+                    continue
+            except ValueError:
+                pass
+        out.append(a)
+    return out
+
 
 def _build_prompt(question: str, description: str, news: list[dict], today: str) -> str:
     news_block = ""
-    if news:
+    fresh = _filter_news(news)
+    if fresh:
         headlines = "\n".join(
-            f"- [{a.get('published_at', '')[:10]}] {a.get('title', '')}"
-            for a in news[:6]
+            f"- [{_article_date(a)}] {a.get('title', '')}"
+            for a in fresh[:6]
         )
         news_block = NEWS_BLOCK_TEMPLATE.format(headlines=headlines)
 
@@ -263,10 +297,11 @@ async def estimate_tail_risk(
             pass
 
     news_block = ""
-    if recent_news:
+    fresh_news = _filter_news(recent_news or [])
+    if fresh_news:
         headlines = "\n".join(
-            f"- [{a.get('published_at', '')[:10]}] {a.get('title', '')}"
-            for a in recent_news[:8]
+            f"- [{_article_date(a)}] {a.get('title', '')}"
+            for a in fresh_news[:8]
         )
         news_block = f"Recent relevant headlines (newest first):\n{headlines}"
 

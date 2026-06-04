@@ -209,8 +209,26 @@ async def run_news_divergence_check(
     """
     from ..ingest.news import pop_recent_articles
 
+    from datetime import datetime, timezone, timedelta
     topic_key = topic or f"market:{group_key}"
     articles = await pop_recent_articles(redis_client, topic_key, n=10)
+
+    # Drop articles older than 7 days and low-quality sources
+    _bad_sources = {"nakedcapitalism", "nakedcapitalism.com", "unbiasthenews",
+                    "unbiasthenews.com", "zerohedge", "zerohedge.com"}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    def _pub(a):
+        s = a.get("published_at") or a.get("published") or a.get("publishedAt") or ""
+        try:
+            dt = datetime.fromisoformat(s[:19].replace("Z", "+00:00"))
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+        except Exception:
+            return None
+    articles = [
+        a for a in articles
+        if (a.get("source") or "").lower() not in _bad_sources
+        and (_pub(a) is None or _pub(a) >= cutoff)
+    ]
 
     if len(articles) < MIN_ARTICLES:
         return None
