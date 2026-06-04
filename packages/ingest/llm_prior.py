@@ -82,6 +82,29 @@ def _parse_response(raw: str) -> dict | None:
     return None
 
 
+async def _call_nvidia_nim(prompt: str, settings) -> dict | None:
+    """Call NVIDIA NIM (OpenAI-compatible) and return parsed JSON dict."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=90) as c:
+            r = await c.post(
+                f"{settings.nvidia_base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.nvidia_api_key}"},
+                json={
+                    "model": settings.nvidia_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "max_tokens": 300,
+                },
+            )
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"]
+            return _parse_response(content)
+    except Exception as exc:
+        log.warning("llm_prior_nvidia_error", error=str(exc))
+        return None
+
+
 async def _call_ollama(prompt: str, settings) -> dict | None:
     """Call local Ollama and return parsed JSON dict, or None on failure."""
     import httpx
@@ -144,7 +167,9 @@ async def estimate_probability(
 
     prompt = _build_prompt(question, description, recent_news or [], today)
 
-    if settings.ollama_primary:
+    if settings.nvidia_api_key:
+        parsed = await _call_nvidia_nim(prompt, settings) or await _call_ollama(prompt, settings)
+    elif settings.ollama_primary:
         parsed = await _call_ollama(prompt, settings)
     else:
         parsed = await _call_claude(prompt, market_id, settings, model) or await _call_ollama(prompt, settings)
@@ -254,7 +279,9 @@ async def estimate_tail_risk(
         news_block=news_block,
     )
 
-    if settings.ollama_primary:
+    if settings.nvidia_api_key:
+        parsed = await _call_nvidia_nim(prompt, settings) or await _call_ollama(prompt, settings)
+    elif settings.ollama_primary:
         parsed = await _call_ollama(prompt, settings)
     else:
         parsed = await _call_claude(prompt, market_id, settings, model) or await _call_ollama(prompt, settings)

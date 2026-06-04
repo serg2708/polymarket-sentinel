@@ -27,10 +27,14 @@ class Settings(BaseSettings):
     # News
     newsapi_key: str = ""
 
-    # Ollama
+    # NVIDIA NIM (primary LLM when key is set)
+    nvidia_api_key: str = ""
+    nvidia_model: str = "meta/llama-3.3-70b-instruct"
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+
+    # Ollama (fallback when NIM key absent, or primary when ollama_primary=true)
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:14b-instruct"
-    # Economy mode: use Ollama as primary LLM, Claude only as fallback
     ollama_primary: bool = False
 
     # Optional LLM APIs

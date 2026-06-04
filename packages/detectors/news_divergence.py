@@ -67,6 +67,28 @@ async def score_article(
         summary=article.get("summary", "")[:500],
     )
 
+    async def _nvidia() -> dict | None:
+        if not settings.nvidia_api_key:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                r = await c.post(
+                    f"{settings.nvidia_base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {settings.nvidia_api_key}"},
+                    json={
+                        "model": settings.nvidia_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.2,
+                        "max_tokens": 150,
+                    },
+                )
+                r.raise_for_status()
+                content = r.json()["choices"][0]["message"]["content"]
+                return _parse_json(content)
+        except Exception as exc:
+            log.warning("news_score_nvidia_error", error=str(exc))
+            return None
+
     async def _ollama() -> dict | None:
         m = model or settings.ollama_model
         try:
@@ -97,6 +119,8 @@ async def score_article(
             log.warning("news_score_claude_error", error=str(exc))
             return None
 
+    if settings.nvidia_api_key:
+        return await _nvidia() or await _ollama()
     if settings.ollama_primary:
         return await _ollama()
     return await _claude() or await _ollama()
