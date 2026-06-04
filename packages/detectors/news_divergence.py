@@ -25,9 +25,10 @@ from ..common.settings import get_settings
 
 log = structlog.get_logger()
 
-SENTIMENT_THRESHOLD = 0.4     # |EMA sentiment| must exceed this to alert
-MIN_ARTICLES = 3              # need at least this many recent articles
-EMA_ALPHA = 0.3               # EMA smoothing factor (higher = more weight on recent)
+SENTIMENT_THRESHOLD = 0.5     # |mean directional sentiment| must exceed this to alert
+MIN_ARTICLES = 3              # need at least this many recent articles in the bucket
+MIN_DIRECTIONAL = 3          # need at least this many R/L (non-neutral) scores to fire
+MAX_SCORE_PER_CYCLE = 8      # how many fresh articles to score per market per cycle
 PRICE_STALE_SECONDS = 300     # Polymarket price considered stale if unchanged for this long
 
 
@@ -152,48 +153,6 @@ def direction_to_score(direction: str, confidence: float) -> float:
         return 0.0
 
 
-class SentimentIndex:
-    """
-    Exponentially-weighted moving average of article sentiment scores.
-    Higher = more YES-bullish recent news.
-    """
-
-    def __init__(self, alpha: float = EMA_ALPHA) -> None:
-        self.alpha = alpha
-        self.ema: float | None = None
-        self.n: int = 0
-
-    def update(self, score: float) -> None:
-        if self.ema is None:
-            self.ema = score
-        else:
-            self.ema = self.alpha * score + (1.0 - self.alpha) * self.ema
-        self.n += 1
-
-    @property
-    def value(self) -> float | None:
-        return self.ema
-
-    def is_diverging(self, market_p: float, threshold: float = SENTIMENT_THRESHOLD) -> bool:
-        """True when news sentiment strongly disagrees with market price direction."""
-        if self.ema is None or self.n < MIN_ARTICLES:
-            return False
-        # Sentiment > threshold AND market is NOT priced accordingly
-        if self.ema > threshold and market_p < 0.7:
-            return True
-        if self.ema < -threshold and market_p > 0.3:
-            return True
-        return False
-
-
-# Per-market sentiment indices
-_sentiment_store: dict[str, SentimentIndex] = {}
-
-
-def get_sentiment(group_key: str) -> SentimentIndex:
-    if group_key not in _sentiment_store:
-        _sentiment_store[group_key] = SentimentIndex()
-    return _sentiment_store[group_key]
 
 
 async def run_news_divergence_check(
@@ -233,38 +192,52 @@ async def run_news_divergence_check(
     if len(articles) < MIN_ARTICLES:
         return None
 
-    index = get_sentiment(group_key)
-
-    # Score new articles (batch, sequential to be Ollama-friendly)
+    # Score fresh articles. Neutral (U) verdicts are off-topic / no-impact noise
+    # and are EXCLUDED from the magnitude so they can't dilute the signal toward
+    # zero. We require MIN_DIRECTIONAL genuinely directional (R/L) articles and
+    # average only those — this is computed per-cycle (no fragile in-memory EMA).
+    directional_scores: list[float] = []
     new_scores = []
-    for art in articles[:5]:  # limit to 5 most recent per cycle
+    for art in articles[:MAX_SCORE_PER_CYCLE]:
         verdict = await score_article(art, question, market_p)
         if verdict:
-            score = direction_to_score(
-                verdict.get("direction", "U"),
-                float(verdict.get("confidence", 0.5)),
-            )
-            index.update(score)
-            new_scores.append({
-                "title": art.get("title", ""),
-                "direction": verdict.get("direction"),
-                "confidence": verdict.get("confidence"),
-                "score": round(score, 3),
-                "reason": verdict.get("reason", ""),
-            })
-        await asyncio.sleep(0.5)  # Ollama needs a breath
+            direction = verdict.get("direction", "U")
+            score = direction_to_score(direction, float(verdict.get("confidence", 0.5)))
+            if direction in ("R", "L") and score != 0.0:
+                directional_scores.append(score)
+                new_scores.append({
+                    "title": art.get("title", ""),
+                    "direction": direction,
+                    "confidence": verdict.get("confidence"),
+                    "score": round(score, 3),
+                    "reason": verdict.get("reason", ""),
+                })
+        await asyncio.sleep(0.3)
 
-    if not index.is_diverging(market_p):
+    if len(directional_scores) < MIN_DIRECTIONAL:
+        log.debug("news_divergence_insufficient_directional",
+                  group_key=group_key, directional=len(directional_scores))
+        return None
+
+    sentiment = sum(directional_scores) / len(directional_scores)
+
+    # Fire only when the directional consensus disagrees with the market price:
+    # bullish news (sentiment > 0) on a market priced < 70¢ → YES underpriced;
+    # bearish news (sentiment < 0) on a market priced > 30¢ → NO underpriced.
+    diverging = (sentiment > SENTIMENT_THRESHOLD and market_p < 0.7) or \
+                (sentiment < -SENTIMENT_THRESHOLD and market_p > 0.3)
+    if not diverging:
         return None
 
     return {
         "kind": "news_divergence",
         "group_key": group_key,
         "title": question,
-        "sentiment_ema": round(index.value, 3),
+        "sentiment_ema": round(sentiment, 3),
+        "confidence": round(abs(sentiment), 3),  # consensus strength, gated in main.py
         "market_p": round(market_p, 4),
-        "n_articles_scored": index.n,
+        "n_articles_scored": len(directional_scores),
         "recent_articles": new_scores[:3],
-        "edge_bps": int(abs(index.value) * 1000),  # proxy; not real arb bps
-        "direction": "YES_underpriced" if index.value > 0 else "NO_underpriced",
+        "edge_bps": int(abs(sentiment) * 1000),  # proxy; not real arb bps
+        "direction": "YES_underpriced" if sentiment > 0 else "NO_underpriced",
     }
