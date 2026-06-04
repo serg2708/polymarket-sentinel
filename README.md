@@ -20,7 +20,7 @@ A prediction market monitoring system that detects price discrepancies between p
    └── News Divergence: LLM scores news, sentiment EMA vs price (every 2 min)
 
 3. matcher — matches markets across platforms
-   └── Polymarket ↔ Kalshi / Manifold via LLM (Ollama or Claude)
+   └── Polymarket ↔ Kalshi / Manifold via LLM (NIM / Ollama / Claude)
 
 4. bot — delivers alerts
    ├── Reads Redis queue
@@ -30,13 +30,30 @@ A prediction market monitoring system that detects price discrepancies between p
 
 ---
 
-## LLM usage (Ollama + Claude)
+## LLM usage (NVIDIA NIM / Ollama / Claude)
 
-The bot uses an LLM in three places. The model is chosen via `OLLAMA_PRIMARY`:
-- `OLLAMA_PRIMARY=true` → Ollama first (local, free), Claude as fallback
-- `OLLAMA_PRIMARY=false` → Claude API first, Ollama as fallback
+The bot uses an LLM in three places. The backend is chosen by which keys are set, in this priority order:
 
-**Recommended model:** `qwen2.5:7b-instruct-q8_0` (8 GB VRAM, excellent JSON quality)
+1. **NVIDIA NIM** — used first when `NVIDIA_API_KEY` is set (cloud, free 1000 req/day, **no GPU needed**)
+2. **Ollama** — used first when `OLLAMA_PRIMARY=true` and no NIM key (local, free, needs GPU for speed)
+3. **Claude API** — used first when neither of the above; otherwise the final fallback
+
+Ollama is always the fallback if the chosen primary backend fails.
+
+**Recommended models:**
+- NIM: `meta/llama-3.3-70b-instruct` (best free reasoning model)
+- Ollama: `qwen2.5:7b-instruct-q8_0` (8 GB VRAM, excellent JSON quality)
+
+> **Why NIM is preferred:** runs on NVIDIA's servers, so the bot works on a machine
+> without a GPU. The 70B model is far stronger on geopolitics and analysis than a
+> local 7B. Set `NVIDIA_API_KEY` and the bot uses it automatically.
+
+### News quality filtering
+
+Before any article reaches the LLM (tail risk + news divergence), it is filtered:
+- **Stale articles** (older than 7 days) are dropped — prevents week-old headlines
+  being treated as breaking news
+- **Low-quality sources** (link aggregators, known low-signal outlets) are excluded
 
 ### 1. News Divergence — article scoring
 
@@ -73,17 +90,16 @@ Automatically finds the same question on different platforms:
 3. Pairs with confidence ≥ 85% → `approved_by = 'auto'` (active automatically)
 4. Pairs with confidence < 85% → `approved_by = 'pending'` (needs manual review)
 
-Uses Ollama (or Claude as fallback), runs every 30 min (Kalshi) and 6 hours (Manifold).
+Uses the configured LLM backend (NIM → Ollama → Claude), runs every 30 min (Kalshi) and 6 hours (Manifold).
 
 ### Current status
 
 ```
-✅ enabled:   news_divergence, tail_risk, auto-matching
-❌ disabled:  soft_edge (Metaculus/Manifold/Claude API calls)
-❌ disabled:  llm_prior standalone scan (4h cycle)
+✅ enabled:   news_divergence, tail_risk, llm_prior, auto-matching
+❌ disabled:  soft_edge cross-platform (Metaculus/Manifold — no API keys)
 ```
 
-Reason: API token economy. Tail risk and news divergence already use LLM efficiently.
+`soft_edge_llm_prior` requires a ≥10 pp gap to fire (filters borderline LLM noise).
 
 ---
 
@@ -159,12 +175,17 @@ Permanent fix: Docker Desktop → Settings → Resources → uncheck **"Enable R
 TELEGRAM_BOT_TOKEN=...
 ADMIN_CHAT_ID=...              # your chat_id (get via @userinfobot)
 
-# Ollama (primary LLM — free, local)
+# NVIDIA NIM (primary LLM — free 1000 req/day, no GPU needed)
+# Get key at https://build.nvidia.com → any model → "Get API Key"
+NVIDIA_API_KEY=nvapi-...
+NVIDIA_MODEL=meta/llama-3.3-70b-instruct
+
+# Ollama (fallback when no NIM key, or primary if OLLAMA_PRIMARY=true)
 OLLAMA_BASE_URL=http://192.168.65.2:11434   # host address inside Docker Desktop VM
 OLLAMA_MODEL=qwen2.5:7b-instruct-q8_0       # recommended for 8 GB VRAM
-OLLAMA_PRIMARY=true
+OLLAMA_PRIMARY=false                         # NIM takes priority when its key is set
 
-# Claude API (optional — fallback if Ollama is unavailable)
+# Claude API (optional — final fallback)
 ANTHROPIC_API_KEY=                           # leave empty to disable
 
 # Kalshi (optional — required for cross-platform arb)
@@ -205,10 +226,10 @@ SUPPLEMENTAL_MARKET_IDS=701539,701540,...   # e.g. ETH EOY 2026
 | **Intra-market arb** | ★★★★★ | YES+NO inside Polymarket < $1. No extra keys needed |
 | **Metaculus** | ★★★★☆ | Community CP, real forecasters. Requires API token above free tier |
 | **PredictIt** | ★★★☆☆ | Real money. −10% fee on profit. Geo-blocked outside the US |
-| **Tail Risk (LLM + News)** | ★★★☆☆ | Underpriced events 3–35%. Runs on Ollama; fresh news recommended for signals |
+| **Tail Risk (LLM + News)** | ★★★☆☆ | Underpriced events 3–35%. Fresh news (≤7 days) recommended for signals |
 | **News Divergence** | ★★★☆☆ | News sentiment vs market price. Works well on macro/crypto |
 | **Manifold** | ★★☆☆☆ | Play-money (Mana). Frequent recency/partisan bias |
-| **LLM Prior (Ollama/Claude)** | ★★☆☆☆ | P(YES) estimate via LLM. Supporting signal only |
+| **LLM Prior (NIM/Ollama)** | ★★☆☆☆ | P(YES) estimate via LLM. Needs ≥10 pp gap. Supporting signal only |
 
 ---
 
