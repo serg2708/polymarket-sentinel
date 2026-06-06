@@ -42,6 +42,7 @@ from ..ingest.llm_prior import (
     estimate_tail_risk,
     is_multibracket_numeric,
     is_low_numeric_bracket,
+    _filter_news,
 )
 from ..models.calibration import snapshot_calibration as _snapshot_calibration, mark_resolved
 
@@ -473,9 +474,16 @@ async def run_llm_prior_detection(pool: asyncpg.Pool, redis_client) -> None:
         if _is_sports_market(question):
             continue
 
-        # Pull recent news if available
+        # Pull recent news. Require a fresh catalyst: an LLM prior that disagrees
+        # with a liquid market WITHOUT news is a blind guess (cf. MegaETH, where
+        # the LLM said 25-30% vs a $1.5M market at 14% and the market was right).
         news_key = f"market:{market_id}"
         news = await pop_recent_articles(redis_client, news_key, n=6)
+        fresh_news = _filter_news(news)
+        if len(fresh_news) < 2:
+            log.debug("llm_prior_skip_no_news", market_id=market_id,
+                      fresh_news=len(fresh_news))
+            continue
 
         result = await llm_estimate(
             market_id=market_id,
@@ -715,13 +723,19 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
         question = row["question"] or market_id
         poly_p = float(row["poly_mid"])
 
-        # Sports results are post-cutoff blindspots — Claude can't evaluate them
-        if _is_sports_market(question):
-            log.debug("tail_risk_skip_sports", market_id=market_id)
-            continue
-
         # Pull market-specific news first, supplement with background headlines
         market_news = await pop_recent_articles(redis_client, f"market:{market_id}", n=8)
+        fresh_market_news = _filter_news(market_news)
+
+        # Sports markets are post-cutoff blindspots ONLY without a news catalyst.
+        # With fresh market-specific news (e.g. playoff progression) the LLM can
+        # reason from the catalyst — this is how the Knicks 8.8¢→78¢ signal fired.
+        # Block sports only when there is no fresh catalyst to ground the estimate.
+        if _is_sports_market(question) and len(fresh_market_news) < 2:
+            log.debug("tail_risk_skip_sports_no_news", market_id=market_id,
+                      fresh_news=len(fresh_market_news))
+            continue
+
         if len(market_news) < 3:
             extra = list(background_news.values())[:max(0, 6 - len(market_news))]
             news = market_news + extra
