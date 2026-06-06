@@ -28,7 +28,7 @@ log = structlog.get_logger()
 SENTIMENT_THRESHOLD = 0.5     # |mean directional sentiment| must exceed this to alert
 MIN_ARTICLES = 3              # need at least this many recent articles in the bucket
 MIN_DIRECTIONAL = 3          # need at least this many R/L (non-neutral) scores to fire
-MAX_SCORE_PER_CYCLE = 8      # how many fresh articles to score per market per cycle
+MAX_SCORE_PER_CYCLE = 5      # how many fresh articles to score per market per cycle
 PRICE_STALE_SECONDS = 300     # Polymarket price considered stale if unchanged for this long
 
 
@@ -71,24 +71,33 @@ async def score_article(
     async def _nvidia() -> dict | None:
         if not settings.nvidia_api_key:
             return None
-        try:
-            async with httpx.AsyncClient(timeout=60) as c:
-                r = await c.post(
-                    f"{settings.nvidia_base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {settings.nvidia_api_key}"},
-                    json={
-                        "model": settings.nvidia_model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.2,
-                        "max_tokens": 150,
-                    },
-                )
-                r.raise_for_status()
-                content = r.json()["choices"][0]["message"]["content"]
-                return _parse_json(content)
-        except Exception as exc:
-            log.warning("news_score_nvidia_error", error=str(exc))
-            return None
+        # News scoring is a simple R/L/U classification at high volume → use the
+        # fast small model. The 70B reasoning model takes ~100s on free tier and
+        # times out here; the 8B answers in <1s. Retry on 429 (free-tier RPM cap).
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=30) as c:
+                    r = await c.post(
+                        f"{settings.nvidia_base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {settings.nvidia_api_key}"},
+                        json={
+                            "model": settings.nvidia_fast_model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.2,
+                            "max_tokens": 150,
+                        },
+                    )
+                    if r.status_code == 429:
+                        await asyncio.sleep(2 * (attempt + 1))  # 2s, 4s backoff
+                        continue
+                    r.raise_for_status()
+                    content = r.json()["choices"][0]["message"]["content"]
+                    return _parse_json(content)
+            except Exception as exc:
+                log.warning("news_score_nvidia_error",
+                            error=f"{type(exc).__name__}: {exc}")
+                return None
+        return None  # exhausted retries on 429
 
     async def _ollama() -> dict | None:
         m = model or settings.ollama_model
@@ -212,7 +221,7 @@ async def run_news_divergence_check(
                     "score": round(score, 3),
                     "reason": verdict.get("reason", ""),
                 })
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(1.2)  # throttle to stay under NIM free-tier RPM
 
     if len(directional_scores) < MIN_DIRECTIONAL:
         log.debug("news_divergence_insufficient_directional",

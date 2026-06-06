@@ -29,7 +29,8 @@ class Settings(BaseSettings):
 
     # NVIDIA NIM (primary LLM when key is set)
     nvidia_api_key: str = ""
-    nvidia_model: str = "meta/llama-3.3-70b-instruct"
+    nvidia_model: str = "meta/llama-3.3-70b-instruct"        # reasoning: tail_risk, llm_prior
+    nvidia_fast_model: str = "meta/llama-3.1-8b-instruct"    # high-volume: news R/L/U scoring
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
 
     # Ollama (fallback when NIM key absent, or primary when ollama_primary=true)

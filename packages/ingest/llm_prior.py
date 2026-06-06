@@ -166,10 +166,14 @@ def _parse_response(raw: str) -> dict | None:
 
 
 async def _call_nvidia_nim(prompt: str, settings) -> dict | None:
-    """Call NVIDIA NIM (OpenAI-compatible) and return parsed JSON dict."""
+    """Call NVIDIA NIM (OpenAI-compatible) and return parsed JSON dict.
+
+    Uses the 70B reasoning model. On free tier it can take ~100s under load,
+    so the timeout is generous (180s); Ollama is the fallback if it still fails.
+    """
     import httpx
     try:
-        async with httpx.AsyncClient(timeout=90) as c:
+        async with httpx.AsyncClient(timeout=180) as c:
             r = await c.post(
                 f"{settings.nvidia_base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.nvidia_api_key}"},
@@ -184,7 +188,7 @@ async def _call_nvidia_nim(prompt: str, settings) -> dict | None:
             content = r.json()["choices"][0]["message"]["content"]
             return _parse_response(content)
     except Exception as exc:
-        log.warning("llm_prior_nvidia_error", error=str(exc))
+        log.warning("llm_prior_nvidia_error", error=f"{type(exc).__name__}: {exc}")
         return None
 
 
