@@ -136,13 +136,18 @@ def format_tail_risk(a: dict) -> str:
     kelly_pct  = float(a.get("kelly_fraction") or 0) * 100
     key_signal = a.get("key_signal") or ""
 
-    # Suggested bet: $5–$50 range based on confidence
+    # Trade rule: only act at confidence >= 0.80 (+ gap >= 10pp, verify news).
+    # Below 0.80 the signal is watch-only — do NOT show a bet size, since that
+    # encourages trades the rules forbid (this is how the MegaETH/NATO longshots
+    # were bought at confidence 0.65 and went to zero).
     if confidence >= 0.90:
-        suggest = "$20–$50"
+        action = "💰 Suggested bet: <b>$20–$50</b> YES  (→ Polymarket ↑)\n"
     elif confidence >= 0.80:
-        suggest = "$10–$25"
+        action = "💰 Suggested bet: <b>$10–$25</b> YES  (→ Polymarket ↑)\n"
     else:
-        suggest = "$5–$10"
+        action = (f"⚠️ <b>WATCH ONLY — confidence {confidence * 100:.0f}% &lt; 80%</b>\n"
+                  f"Below trade threshold. Do NOT buy on this alone — needs a "
+                  f"concrete fresh catalyst + manual news check.\n")
 
     return (
         f"🎯 <b>TAIL RISK — UNDERPRICED</b>\n"
@@ -154,7 +159,7 @@ def format_tail_risk(a: dict) -> str:
         f"Confidence: <code>{confidence * 100:.0f}%</code>  "
         f"Kelly ½: <code>{kelly_pct:.1f}%</code>\n\n"
         f"💡 {e(key_signal)}\n"
-        + f"💰 Suggested bet: <b>{suggest}</b> YES  (→ Polymarket ↑)\n"
+        + action
     )
 
 

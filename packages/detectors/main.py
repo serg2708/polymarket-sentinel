@@ -758,11 +758,19 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
         claude_p, confidence, underpriced, key_signal = result
 
         # Must be explicitly flagged as underpriced with meaningful confidence.
-        # 0.70 threshold: Claude's prompt requires ≤0.50 when no news provided,
-        # so 0.70+ means actual specific news evidence was found and evaluated.
         if not underpriced or confidence < 0.65:
             log.debug("tail_risk_skip", market_id=market_id,
                       underpriced=underpriced, confidence=confidence)
+            continue
+
+        # Floor-confidence (0.65) signals are only trustworthy with a concrete
+        # market-specific catalyst. Without one they are uninformed priors that
+        # fight a liquid market and bleed money (MegaETH, NATO-Russia, Israel-
+        # Hamas all fired at 0.65 on generic background news and went to ~zero).
+        if confidence < 0.70 and len(fresh_market_news) < 2:
+            log.info("tail_risk_skip_floor_no_catalyst", market_id=market_id,
+                     confidence=confidence, fresh_market_news=len(fresh_market_news),
+                     question=question[:80])
             continue
 
         # Claude's estimate must be meaningfully above market (at least 1.25×)
