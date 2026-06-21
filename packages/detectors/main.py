@@ -727,13 +727,16 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
         market_news = await pop_recent_articles(redis_client, f"market:{market_id}", n=8)
         fresh_market_news = _filter_news(market_news)
 
-        # Sports markets are post-cutoff blindspots ONLY without a news catalyst.
-        # With fresh market-specific news (e.g. playoff progression) the LLM can
-        # reason from the catalyst — this is how the Knicks 8.8¢→78¢ signal fired.
-        # Block sports only when there is no fresh catalyst to ground the estimate.
-        if _is_sports_market(question) and len(fresh_market_news) < 2:
-            log.debug("tail_risk_skip_sports_no_news", market_id=market_id,
-                      fresh_news=len(fresh_market_news))
+        # Tail risk requires a concrete, market-specific news catalyst — for ANY
+        # market at ANY confidence. Every losing signal (MegaETH, NATO-Russia,
+        # Israeli Knesset) fired WITHOUT one: the LLM produced a phantom edge
+        # against a liquid market on vague background headlines, and the LLM's
+        # self-reported confidence (even 0.80) was not a reliable substitute. The
+        # one winner (Knicks 8.8¢→78¢) had market-specific playoff news. No
+        # catalyst → skip before spending an LLM call.
+        if len(fresh_market_news) < 2:
+            log.info("tail_risk_skip_no_catalyst", market_id=market_id,
+                     fresh_market_news=len(fresh_market_news), question=question[:80])
             continue
 
         if len(market_news) < 3:
@@ -761,16 +764,6 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
         if not underpriced or confidence < 0.65:
             log.debug("tail_risk_skip", market_id=market_id,
                       underpriced=underpriced, confidence=confidence)
-            continue
-
-        # Floor-confidence (0.65) signals are only trustworthy with a concrete
-        # market-specific catalyst. Without one they are uninformed priors that
-        # fight a liquid market and bleed money (MegaETH, NATO-Russia, Israel-
-        # Hamas all fired at 0.65 on generic background news and went to ~zero).
-        if confidence < 0.70 and len(fresh_market_news) < 2:
-            log.info("tail_risk_skip_floor_no_catalyst", market_id=market_id,
-                     confidence=confidence, fresh_market_news=len(fresh_market_news),
-                     question=question[:80])
             continue
 
         # Claude's estimate must be meaningfully above market (at least 1.25×)
