@@ -123,10 +123,23 @@ def _article_date(a: dict) -> str:
     """Return ISO date string from whichever date field the article uses."""
     return (a.get("published_at") or a.get("published") or a.get("publishedAt") or "")[:10]
 
+def _dedup_key(a: dict) -> str:
+    """Identity for de-duplication: prefer URL, else a normalised title.
+
+    The same story often arrives via multiple feeds (or the same feed twice).
+    Counting copies as distinct catalysts let a single news item clear the
+    '>=2 fresh articles' gate, so collapse them first."""
+    url = (a.get("url") or "").strip().lower()
+    if url:
+        return url.split("?")[0].rstrip("/")  # drop query/trailing slash
+    title = (a.get("title") or "").lower()
+    return re.sub(r"[^a-z0-9]+", " ", title).strip()
+
+
 def _filter_news(news: list[dict], max_age_days: int = 7) -> list[dict]:
-    """Remove stale and low-quality articles."""
+    """Remove stale, low-quality, and duplicate articles."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
-    out = []
+    out, seen = [], set()
     for a in news:
         src = (a.get("source") or "").lower()
         if any(bad in src for bad in _LOW_QUALITY_SOURCES):
@@ -141,6 +154,10 @@ def _filter_news(news: list[dict], max_age_days: int = 7) -> list[dict]:
                     continue
             except ValueError:
                 pass
+        key = _dedup_key(a)
+        if key in seen:
+            continue
+        seen.add(key)
         out.append(a)
     return out
 
