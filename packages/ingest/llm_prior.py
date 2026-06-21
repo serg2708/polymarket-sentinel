@@ -40,7 +40,21 @@ CRITICAL — bracketed / multi-outcome markets:
 - For a "less than $X" bracket: YES needs the event to occur AND land below $X.
   If $X is far below a recent known reference (last funding round / valuation /
   price), a YES here is a down-round / collapse scenario and is VERY unlikely
-  even if the event itself is uncertain. Treat such brackets as low probability."""
+  even if the event itself is uncertain. Treat such brackets as low probability.
+
+CRITICAL — "will X launch a token" markets:
+- These resolve YES only for the project's OWN network/governance token (a TGE
+  with tokenomics, snapshot/airdrop, or listing). Read the resolution rules:
+  stablecoins, memecoins, LSTs, synthetic tokens, and "creator coins" usually
+  do NOT count.
+- A token STANDARD, issuance framework, precompile, "native token standard",
+  developer/airdrop DEMO, or a tool that lets OTHERS create tokens is NOT the
+  project launching its own token. Do not treat such news as a catalyst for YES.
+  (e.g. an L2 shipping a token-issuance standard for stablecoin/RWA issuers is
+  infrastructure, not its own network token.)
+- Require an explicit, dated company statement about ITS OWN token (name,
+  tokenomics, snapshot, or launch window) before raising probability. Vague
+  "exploring a token, no timeline" guidance keeps probability low."""
 
 PRIOR_PROMPT = """\
 Today is {today}. You are a well-calibrated forecaster.
