@@ -1,0 +1,10 @@
+[Unit]
+Description=PolySentinel agent, 4 runs/day
+
+[Timer]
+OnCalendar=*-*-* 01,07,13,19:17:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
