@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import requests
 
 import config as C
+from notify import esc, send
 from resolve import resolve_all
 
 GAMMA = "https://gamma-api.polymarket.com"
@@ -236,6 +237,15 @@ def place_live(token_id, stake, worst_price):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        run()
+    except Exception as e:
+        log.exception("run crashed")
+        send(f"❌ Run crashed: <code>{esc(type(e).__name__)}: {esc(str(e)[:400])}</code>")
+        raise
+
+
+def run():
     if C.KILL_SWITCH.exists():
         log.warning("KILL switch present, exiting")
         return
@@ -248,6 +258,8 @@ def main():
     if st["equity"] < C.BANKROLL_USD * (1 - C.MAX_DRAWDOWN):
         C.KILL_SWITCH.write_text(f"drawdown stop {now().isoformat()} equity={st['equity']:.2f}\n")
         log.error("Max drawdown hit, KILL created")
+        send(f"🛑 <b>Drawdown stop</b>: equity ${st['equity']:.2f} of ${C.BANKROLL_USD:.0f}. "
+             f"KILL created, agent stopped. Investigate before <code>rm KILL</code>.")
         return
 
     markets = fetch_candidates(con)
@@ -258,6 +270,7 @@ def main():
         preds = ask_claude(markets)
     except Exception as e:  # limits, timeout, bad output -> skip this run
         log.error("claude failed: %s", e)
+        send(f"⚠️ Claude call failed, run skipped:\n<code>{esc(str(e)[:500])}</code>")
         return
 
     ts = now().isoformat()
@@ -316,6 +329,11 @@ def main():
         st["n_open"] += 1
         log.info("[%s] %s %s @%.3f (all-in) $%.2f | p=%.2f conf=%.2f | %s",
                  C.MODE, side, m["id"], stake / shares, stake, pr["p"], pr["conf"], m["question"][:80])
+        send(f"🟢 <b>New {side}</b> ${stake:.2f} @ {stake / shares:.3f} (all-in, fee ${fee:.2f})\n"
+             f"<b>{esc(m['question'])}</b>\n"
+             f"model P(YES)={pr['p']:.2f} vs market {m['yes_price']:.2f} | conf {pr['conf']:.2f}\n"
+             f"<i>{esc(pr['reasoning'][:600])}</i>\n"
+             f"exposure ${st['exposure']:.2f}, open {st['n_open']}")
 
 
 if __name__ == "__main__":

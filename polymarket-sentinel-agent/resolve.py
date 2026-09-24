@@ -5,6 +5,8 @@ import math
 
 import requests
 
+from notify import esc, send
+
 GAMMA = "https://gamma-api.polymarket.com"
 
 
@@ -40,12 +42,16 @@ def resolve_all(con):
                 marks[mid] = mark
             continue
         con.execute("UPDATE predictions SET outcome=? WHERE market_id=? AND outcome IS NULL", (y, mid))
-        rows = con.execute("SELECT id, side, stake, shares FROM positions "
+        rows = con.execute("SELECT id, side, stake, shares, mode FROM positions "
                            "WHERE market_id=? AND status='open'", (mid,)).fetchall()
-        for pid, side, stake, shares in rows:
+        for pid, side, stake, shares, mode in rows:
             won = (side == "YES") == (y == 1.0)
-            con.execute("UPDATE positions SET status='closed', pnl=? WHERE id=?",
-                        ((shares if won else 0.0) - stake, pid))
+            pnl = (shares if won else 0.0) - stake
+            con.execute("UPDATE positions SET status='closed', pnl=? WHERE id=?", (pnl, pid))
+            q = con.execute("SELECT question FROM predictions WHERE market_id=? ORDER BY id DESC LIMIT 1",
+                            (mid,)).fetchone()
+            send(f"{'✅ WON' if won else '🔻 LOST'} [{mode}] {side} ${stake:.2f} → PnL <b>{pnl:+.2f}</b>\n"
+                 f"{esc(q[0] if q else mid)} → resolved {'YES' if y == 1.0 else 'NO'}")
     con.commit()
     return marks
 
@@ -96,7 +102,16 @@ def report(con):
 
 
 if __name__ == "__main__":
+    import contextlib
+    import io
+    import sys
+
     from run_agent import db
     c = db()
     resolve_all(c)
-    report(c)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        report(c)
+    print(buf.getvalue(), end="")
+    if "--notify" in sys.argv:
+        send(f"📊 <b>Weekly report</b>\n<pre>{esc(buf.getvalue())}</pre>")
