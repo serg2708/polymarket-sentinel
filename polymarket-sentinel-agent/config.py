@@ -15,18 +15,29 @@ MAX_POSITION_FRAC = 0.05         # max 5% of bankroll per position
 MAX_TOTAL_EXPOSURE_FRAC = 0.40   # max 40% of bankroll in open positions
 MAX_NEW_STAKE_PER_DAY_FRAC = 0.15
 MAX_OPEN_POSITIONS = 10
-MAX_DRAWDOWN = 0.30              # bankroll -30% -> KILL file is created
-MIN_EDGE = 0.07                  # |p_model - price| to act
+MAX_DRAWDOWN = 0.30              # equity (incl. unrealized) -30% -> KILL file is created
+MIN_EDGE = 0.07                  # p_model - all-in cost per share (ask + fee), to act
 MIN_CONFIDENCE = 0.6
 MIN_STAKE_USD = 2.0
 
 # --- market selection ---
 MARKETS_PER_RUN = 8              # one claude -p call per run, keep small for limits
 REEVAL_HOURS = 24                # don't re-forecast the same market more often
+CANDIDATE_POOL = 500             # markets pulled from gamma, then sampled
 MIN_LIQUIDITY = 5000
 MIN_DAYS_TO_END = 2
 MAX_DAYS_TO_END = 60
-EXCLUDE_KEYWORDS = ["up or down", "tweets", "temperature", "o/u", "spread"]
+EXCLUDE_KEYWORDS = ["up or down", "tweets", "temperature", "o/u", "spread"]   # whole-word match
+
+# Sources that reveal the market price. A forecast citing them is "leaked": stored, never traded,
+# excluded from the Brier comparison.
+PRICE_LEAK_DOMAINS = ["polymarket.com", "kalshi.com", "manifold.markets", "metaculus.com",
+                      "predictit.org", "polymarketanalytics.com", "oddschecker.com", "betfair.com",
+                      "electionbettingodds.com", "sportsbook", "draftkings.com", "fanduel.com"]
+
+# Taker fee per share = rate * p * (1 - p) (docs.polymarket.com, fees). Rate is 0.04-0.07 by category,
+# 0 for fee-free markets; /fee-rate only tells us whether fees apply, so assume the worst category.
+TAKER_FEE_RATE = 0.07
 
 # --- claude code ---
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")

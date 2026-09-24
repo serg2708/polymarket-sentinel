@@ -4,12 +4,12 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/polysentinel/agent
+WorkingDirectory=%h/dev/polymarket-sentinel/polymarket-sentinel-agent
 Environment=AGENT_MODE=paper
 Environment=AGENT_BANKROLL=300
 # path from `which claude`
 Environment=CLAUDE_BIN=%h/.local/bin/claude
 # live only: POLY_PK, POLY_FUNDER, POLY_SIG_TYPE (chmod 600)
 EnvironmentFile=-%h/.config/polysentinel/secrets.env
-ExecStart=%h/polysentinel/.venv/bin/python run_agent.py
+ExecStart=%h/dev/polymarket-sentinel/polymarket-sentinel-agent/.venv/bin/python run_agent.py
 TimeoutStartSec=1200

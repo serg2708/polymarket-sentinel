@@ -1,0 +1,4 @@
+agent.db
+agent.db-*
+KILL
+.venv/
