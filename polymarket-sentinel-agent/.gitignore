@@ -2,3 +2,4 @@ agent.db
 agent.db-*
 KILL
 .venv/
+reports/
