@@ -40,6 +40,11 @@ PRICE_LEAK_DOMAINS = ["polymarket.com", "kalshi.com", "manifold.markets", "metac
 # 0 for fee-free markets; /fee-rate only tells us whether fees apply, so assume the worst category.
 TAKER_FEE_RATE = 0.07
 
+# Bump when the prompt or the model's inputs change: the report scores only the current version,
+# so forecasts made under old conditions don't pollute the edge verdict.
+# v1: descriptions cut at 1200 chars.  v2: full resolution rules.
+FORECAST_VERSION = 2
+
 # --- claude code ---
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 CLAUDE_TIMEOUT_S = 900

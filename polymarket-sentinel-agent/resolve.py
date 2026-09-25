@@ -5,6 +5,7 @@ import math
 
 import requests
 
+import config as C
 from notify import esc, market_url, send
 
 GAMMA = "https://gamma-api.polymarket.com"
@@ -85,12 +86,15 @@ def report(con):
     # First forecast per market only (re-forecasts are correlated and would inflate n); leaked excluded.
     rows = con.execute(
         "SELECT p_model, p_market, outcome, confidence FROM predictions p "
-        "WHERE outcome IS NOT NULL AND COALESCE(leaked,0)=0 AND id = ("
-        "  SELECT MIN(id) FROM predictions WHERE market_id=p.market_id AND COALESCE(leaked,0)=0)").fetchall()
+        "WHERE outcome IS NOT NULL AND COALESCE(leaked,0)=0 AND version=? AND id = ("
+        "  SELECT MIN(id) FROM predictions WHERE market_id=p.market_id AND COALESCE(leaked,0)=0 AND version=?)",
+        (C.FORECAST_VERSION, C.FORECAST_VERSION)).fetchall()
+    old = con.execute("SELECT COUNT(*) FROM predictions WHERE COALESCE(version,1) < ?",
+                      (C.FORECAST_VERSION,)).fetchone()[0]
     leaked = con.execute("SELECT COUNT(*) FROM predictions WHERE leaked=1").fetchone()[0]
-    print(f"Resolved markets (first forecast, not leaked): {len(rows)}   leaked forecasts overall: {leaked}")
+    print(f"Forecast version v{C.FORECAST_VERSION}. Resolved markets (first forecast, not leaked): {len(rows)}   "
+          f"leaked overall: {leaked}   older versions ignored: {old}")
     brier_line("All         ", [r[:3] for r in rows])
-    import config as C
     brier_line("Confident   ", [r[:3] for r in rows if r[3] >= C.MIN_CONFIDENCE])
 
     for mode, cnt, pnl, fee, staked in con.execute(

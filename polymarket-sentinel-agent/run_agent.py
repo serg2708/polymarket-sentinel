@@ -24,15 +24,17 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS predictions(
   id INTEGER PRIMARY KEY, ts TEXT, market_id TEXT, question TEXT,
   p_model REAL, p_market REAL, confidence REAL, reasoning TEXT, sources TEXT,
-  outcome REAL, leaked INTEGER DEFAULT 0);
+  outcome REAL, leaked INTEGER DEFAULT 0, version INTEGER DEFAULT 1);
 CREATE TABLE IF NOT EXISTS positions(
   id INTEGER PRIMARY KEY, ts TEXT, market_id TEXT, side TEXT, token_id TEXT,
   price REAL, stake REAL, shares REAL, mode TEXT,
-  status TEXT DEFAULT 'open', pnl REAL, fee REAL DEFAULT 0, order_id TEXT);
+  status TEXT DEFAULT 'open', pnl REAL, fee REAL DEFAULT 0, order_id TEXT, event TEXT);
 """
 MIGRATIONS = [("predictions", "leaked", "INTEGER DEFAULT 0"),
               ("positions", "fee", "REAL DEFAULT 0"),
-              ("positions", "order_id", "TEXT")]
+              ("positions", "order_id", "TEXT"),
+              ("predictions", "version", "INTEGER DEFAULT 1"),
+              ("positions", "event", "TEXT")]
 EXCLUDE_RE = re.compile(r"\b(" + "|".join(re.escape(k) for k in C.EXCLUDE_KEYWORDS) + r")\b", re.I)
 
 
@@ -282,14 +284,16 @@ def run():
     ts = now().isoformat()
     # Size off the smaller of realized bankroll and marked equity, so open losses shrink new bets.
     base = min(st["bankroll"], st["equity"])
+    held_events = {x[0] for x in con.execute(
+        "SELECT event FROM positions WHERE status='open' AND mode=? AND event IS NOT NULL", (C.MODE,))}
     for m in markets:
         pr = preds.get(m["id"])
         if not pr:
             continue
-        con.execute("INSERT INTO predictions(ts,market_id,question,p_model,p_market,confidence,reasoning,sources,leaked)"
-                    " VALUES(?,?,?,?,?,?,?,?,?)",
+        con.execute("INSERT INTO predictions(ts,market_id,question,p_model,p_market,confidence,reasoning,sources,"
+                    "leaked,version) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (ts, m["id"], m["question"], pr["p"], m["yes_price"], pr["conf"], pr["reasoning"],
-                     pr["sources"], int(pr["leaked"])))
+                     pr["sources"], int(pr["leaked"]), C.FORECAST_VERSION))
         con.commit()
         if pr["leaked"]:
             log.info("skip %s: forecast cited a price source", m["id"])
@@ -298,6 +302,10 @@ def run():
             continue  # no chance of an edge; don't spend book requests
         if st["n_open"] >= C.MAX_OPEN_POSITIONS:
             break
+        if m["url"] and m["url"] in held_events:
+            # sibling markets of one event (same question, other dates) are one correlated bet
+            log.info("skip %s: already holding a position on this event", m["id"])
+            continue
         try:
             yes_bk, no_bk = book(m["yes_token"]), book(m["no_token"])
         except (requests.RequestException, ValueError) as e:
@@ -326,10 +334,11 @@ def run():
             except Exception as e:
                 log.error("order failed %s: %s", m["id"], e)
                 continue
-        con.execute("INSERT INTO positions(ts,market_id,side,token_id,price,stake,shares,mode,fee,order_id)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (ts, m["id"], side, token, stake / shares, stake, shares, C.MODE, fee, order_id))
+        con.execute("INSERT INTO positions(ts,market_id,side,token_id,price,stake,shares,mode,fee,order_id,event)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (ts, m["id"], side, token, stake / shares, stake, shares, C.MODE, fee, order_id, m["url"]))
         con.commit()  # a live fill must never be lost to a later crash
+        held_events.add(m["url"])
         st["exposure"] += stake
         st["today"] += stake
         st["n_open"] += 1
