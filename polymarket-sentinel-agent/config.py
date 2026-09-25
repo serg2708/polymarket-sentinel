@@ -24,6 +24,7 @@ MIN_STAKE_USD = 2.0
 MARKETS_PER_RUN = 8              # one claude -p call per run, keep small for limits
 REEVAL_HOURS = 24                # don't re-forecast the same market more often
 CANDIDATE_POOL = 500             # markets pulled from gamma, then sampled
+MAX_DESCRIPTION_CHARS = 6000     # full resolution rules; exclusions often sit at the end
 MIN_LIQUIDITY = 5000
 MIN_DAYS_TO_END = 2
 MAX_DAYS_TO_END = 60

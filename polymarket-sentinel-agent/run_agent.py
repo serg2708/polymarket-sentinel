@@ -56,17 +56,23 @@ def as_list(v):
 
 
 def fetch_candidates(con):
-    r = requests.get(f"{GAMMA}/markets", timeout=30, params={
-        "active": "true", "closed": "false", "limit": C.CANDIDATE_POOL,
-        "order": "volume24hr", "ascending": "false"})
-    r.raise_for_status()
+    pool = []
+    for offset in range(0, C.CANDIDATE_POOL, 100):      # gamma caps a page at 100
+        r = requests.get(f"{GAMMA}/markets", timeout=30, params={
+            "active": "true", "closed": "false", "limit": 100, "offset": offset,
+            "order": "volume24hr", "ascending": "false"})
+        r.raise_for_status()
+        page = r.json()
+        pool += page
+        if len(page) < 100:
+            break
     since = (now() - timedelta(hours=C.REEVAL_HOURS)).isoformat()
     recent = {x[0] for x in con.execute("SELECT market_id FROM predictions WHERE ts > ?", (since,))}
     seen = {x[0] for x in con.execute("SELECT market_id FROM predictions")}
     held = {x[0] for x in con.execute("SELECT market_id FROM positions WHERE status='open'")}
 
     fresh, again = [], []
-    for m in r.json():
+    for m in pool:
         try:
             outcomes = [o.lower() for o in as_list(m.get("outcomes"))]
             prices = [float(x) for x in as_list(m.get("outcomePrices"))]
@@ -88,7 +94,7 @@ def fetch_candidates(con):
         if EXCLUDE_RE.search(q):
             continue
         (again if mid in seen else fresh).append(
-            {"id": mid, "question": q, "description": (m.get("description") or "")[:1200],
+            {"id": mid, "question": q, "description": (m.get("description") or "")[:C.MAX_DESCRIPTION_CHARS],
              "end_date": m["endDate"], "yes_price": prices[0],
              "yes_token": tokens[0], "no_token": tokens[1], "url": market_url(m)})
     # Top-by-volume markets are the most efficient and barely change run to run: sample instead,
