@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import requests
 
 import config as C
-from notify import esc, send
+from notify import esc, market_url, send
 from resolve import resolve_all
 
 GAMMA = "https://gamma-api.polymarket.com"
@@ -90,7 +90,7 @@ def fetch_candidates(con):
         (again if mid in seen else fresh).append(
             {"id": mid, "question": q, "description": (m.get("description") or "")[:1200],
              "end_date": m["endDate"], "yes_price": prices[0],
-             "yes_token": tokens[0], "no_token": tokens[1]})
+             "yes_token": tokens[0], "no_token": tokens[1], "url": market_url(m)})
     # Top-by-volume markets are the most efficient and barely change run to run: sample instead,
     # never-forecast markets first.
     random.shuffle(fresh)
@@ -333,7 +333,7 @@ def run():
              f"<b>{esc(m['question'])}</b>\n"
              f"model P(YES)={pr['p']:.2f} vs market {m['yes_price']:.2f} | conf {pr['conf']:.2f}\n"
              f"<i>{esc(pr['reasoning'][:600])}</i>\n"
-             f"exposure ${st['exposure']:.2f}, open {st['n_open']}")
+             f"exposure ${st['exposure']:.2f}, open {st['n_open']}", url=m["url"])
 
 
 if __name__ == "__main__":

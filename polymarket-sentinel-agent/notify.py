@@ -26,8 +26,14 @@ def _creds():
     return token, chat
 
 
-def send(text):
-    """text is HTML; escape dynamic parts with esc()."""
+def market_url(m):
+    """Polymarket page for a gamma market dict, same scheme as the main bot's alerts."""
+    slug = ((m.get("events") or [{}])[0] or {}).get("slug") or m.get("slug")
+    return f"https://polymarket.com/event/{slug}" if slug else None
+
+
+def send(text, url=None):
+    """text is HTML; escape dynamic parts with esc(). url adds a "Polymarket ↗" button."""
     token, chat = _creds()
     if not token or not chat:
         log.warning("telegram not configured, alert dropped")
@@ -37,7 +43,8 @@ def send(text):
         r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", timeout=15, json={
             "chat_id": chat, "text": f"🤖 <b>PolySentinel agent [{C.MODE}]</b>\n{text}"[:4096],
             "parse_mode": "HTML", "disable_web_page_preview": True,
-            "disable_notification": h >= QUIET_START or h < QUIET_END})
+            "disable_notification": h >= QUIET_START or h < QUIET_END,
+            **({"reply_markup": {"inline_keyboard": [[{"text": "Polymarket ↗", "url": url}]]}} if url else {})})
         if not r.ok:
             log.warning("telegram %s: %s", r.status_code, r.text[:200])
     except requests.RequestException as e:

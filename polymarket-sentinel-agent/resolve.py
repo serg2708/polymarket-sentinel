@@ -5,29 +5,31 @@ import math
 
 import requests
 
-from notify import esc, send
+from notify import esc, market_url, send
 
 GAMMA = "https://gamma-api.polymarket.com"
 
 
 def market_state(market_id):
-    """Returns (outcome or None, current YES price or None)."""
+    """Returns (outcome or None, current YES price or None, page url or None)."""
     try:
-        r = requests.get(f"{GAMMA}/markets/{market_id}", timeout=20)
-    except requests.RequestException:
-        return None, None
-    if r.status_code != 200:
-        return None, None
-    m = r.json()
+        # list endpoint, unlike /markets/{id}, includes events[] (needed for the page url)
+        r = requests.get(f"{GAMMA}/markets", params={"id": market_id}, timeout=20)
+        m = r.json()[0] if r.status_code == 200 and r.json() else None
+    except (requests.RequestException, ValueError):
+        m = None
+    if not m:
+        return None, None, None
+    url = market_url(m)
     raw = m.get("outcomePrices")
     try:
         prices = [float(x) for x in (json.loads(raw) if isinstance(raw, str) else raw or [])]
     except (ValueError, TypeError):
-        return None, None
+        return None, None, url
     mark = prices[0] if len(prices) == 2 else None
     if m.get("closed") and len(prices) == 2 and max(prices) >= 0.99:
-        return (1.0 if prices[0] > prices[1] else 0.0), mark
-    return None, mark  # open, or closed but not cleanly resolved yet (dispute, 50/50) -> retry later
+        return (1.0 if prices[0] > prices[1] else 0.0), mark, url
+    return None, mark, url  # open, or closed but not cleanly resolved yet (dispute, 50/50) -> retry later
 
 
 def resolve_all(con):
@@ -36,7 +38,7 @@ def resolve_all(con):
     ids = open_pos | {x[0] for x in con.execute("SELECT market_id FROM predictions WHERE outcome IS NULL")}
     marks = {}
     for mid in ids:
-        y, mark = market_state(mid)
+        y, mark, url = market_state(mid)
         if y is None:
             if mid in open_pos and mark is not None:
                 marks[mid] = mark
@@ -51,7 +53,7 @@ def resolve_all(con):
             q = con.execute("SELECT question FROM predictions WHERE market_id=? ORDER BY id DESC LIMIT 1",
                             (mid,)).fetchone()
             send(f"{'✅ WON' if won else '🔻 LOST'} [{mode}] {side} ${stake:.2f} → PnL <b>{pnl:+.2f}</b>\n"
-                 f"{esc(q[0] if q else mid)} → resolved {'YES' if y == 1.0 else 'NO'}")
+                 f"{esc(q[0] if q else mid)} → resolved {'YES' if y == 1.0 else 'NO'}", url=url)
     con.commit()
     return marks
 
