@@ -46,6 +46,7 @@ cd ~/dev/polymarket-sentinel/polymarket-sentinel-agent
 | Что | Команда |
 |---|---|
 | Отчёт: есть ли перевес, PnL | `.venv/bin/python resolve.py` |
+| Все ставки с текущими ценами | `.venv/bin/python resolve.py --positions` |
 | Еженедельные отчёты | `ls reports/` , `cat reports/report-*.txt` |
 | Логи в реальном времени | `journalctl --user -u polysentinel-agent -f` |
 | Логи последних запусков | `journalctl --user -u polysentinel-agent -n 100 --no-pager` |

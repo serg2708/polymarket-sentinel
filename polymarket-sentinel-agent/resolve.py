@@ -107,6 +107,36 @@ def report(con):
         print(f"[{mode}] open={cnt} exposure=${exp:.2f}")
 
 
+def positions(con, marks):
+    """All positions: open ones marked to the current price, closed ones with realized PnL."""
+    rows = con.execute(
+        "SELECT p.ts, p.market_id, p.side, p.price, p.stake, p.shares, p.status, p.pnl, p.mode, "
+        "  (SELECT question FROM predictions q WHERE q.market_id=p.market_id ORDER BY id DESC LIMIT 1), "
+        "  (SELECT p_model FROM predictions q WHERE q.market_id=p.market_id AND q.ts<=p.ts ORDER BY id DESC LIMIT 1) "
+        "FROM positions p ORDER BY p.id").fetchall()
+    if not rows:
+        print("No positions yet.")
+        return
+    print(f"{'date':10} {'mode':5} {'side':4} {'price':>5} {'stake':>7} {'model':>5} {'now':>5} "
+          f"{'PnL':>8}  {'status':6} question")
+    total_open = total_closed = 0.0
+    for ts, mid, side, price, stake, shares, status, pnl, mode, q, p_model in rows:
+        y = marks.get(mid)
+        now = (y if side == "YES" else 1 - y) if y is not None else None
+        if status == "open":
+            val = shares * now - stake if now is not None else 0.0
+            total_open += val
+            pnl_s, now_s = (f"~{val:+.2f}" if now is not None else "?"), (f"{now:.3f}" if now is not None else "?")
+        else:
+            total_closed += pnl or 0.0
+            pnl_s, now_s = f"{pnl or 0:+.2f}", "-"
+        p_side = (p_model if side == "YES" else 1 - p_model) if p_model is not None else None
+        print(f"{ts[:10]} {mode:5} {side:4} {price:5.3f} ${stake:6.2f} "
+              f"{(f'{p_side:.2f}' if p_side is not None else '?'):>5} {now_s:>5} {pnl_s:>8}  {status:6} {(q or mid)[:70]}")
+    print(f"\nRealized PnL: ${total_closed:+.2f}   Unrealized (at current price): ~${total_open:+.2f}")
+    print("price/model/now are for the side held; ~ = not locked in until the market resolves")
+
+
 if __name__ == "__main__":
     import contextlib
     import io
@@ -114,7 +144,10 @@ if __name__ == "__main__":
 
     from run_agent import db
     c = db()
-    resolve_all(c)
+    marks = resolve_all(c)
+    if "--positions" in sys.argv:
+        positions(c, marks)
+        sys.exit()
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         report(c)
