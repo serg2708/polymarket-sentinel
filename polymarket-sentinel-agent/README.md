@@ -180,7 +180,7 @@ YES-бид на mid−1¢ и NO-бид на (1−mid)−1¢. **По умолча
    вписать `POLY_PK`, `POLY_FUNDER`, `POLY_SIG_TYPE`.
 3. Сухой прогон на лучших рынках теневого MM, 10–15 минут, проверить лог:
    `.venv/bin/python mm/live_mm.py --auto 2`
-4. Боевой запуск (2 рынка × $50, стоп при −$15 за день):
+4. Боевой запуск (1 рынок × $45 при балансе $50, стоп при −$15 за день; для 2 рынков поменять `--auto` и `MM_CAPITAL_PER_MARKET` в юните):
    `cp polysentinel-mm-live.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user start polysentinel-mm-live`
 5. Следить: Telegram (▶️ старт, 💱 исполнения, 🧮 итог дня, 🛑 автостоп),
    `journalctl --user -u polysentinel-mm-live -f`.
