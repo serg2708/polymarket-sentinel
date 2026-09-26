@@ -1,0 +1,16 @@
+[Unit]
+Description=PolySentinel LIVE market maker (real money) — start manually only
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/polymarket-sentinel/polymarket-sentinel-agent
+# POLY_PK, POLY_FUNDER, POLY_SIG_TYPE — chmod 600, never in git
+EnvironmentFile=%h/.config/polysentinel/secrets.env
+Environment=MM_LIVE=1
+Environment=MM_CAPITAL_PER_MARKET=50
+Environment=MM_MAX_DAILY_LOSS=15
+ExecStart=%h/dev/polymarket-sentinel/polymarket-sentinel-agent/.venv/bin/python mm/live_mm.py --live --auto 2
+# no auto-restart: after a KILL or a crash a human looks first
+Restart=no
+TimeoutStopSec=30

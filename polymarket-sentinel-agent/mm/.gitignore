@@ -1,2 +1,5 @@
 mm.db
 mm.db-*
+live.db
+live.db-*
+KILL
