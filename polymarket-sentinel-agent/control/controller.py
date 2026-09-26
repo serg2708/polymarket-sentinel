@@ -48,6 +48,11 @@ def clean(out, keep=25):
     return "\n".join(lines[-keep:])
 
 
+def head(out, keep):
+    lines = [l for l in out.splitlines() if l.strip() and "RuntimeWarning" not in l and "HTTP Request" not in l]
+    return "\n".join(lines[:keep])
+
+
 def exchange_line():
     """Read-only account snapshot; empty if no secrets are configured."""
     if not os.getenv("POLY_PK"):
@@ -63,13 +68,12 @@ def exchange_line():
 
 
 def status():
-    timer = clean(systemctl("list-timers", f"{AGENT_UNIT}.timer", "--no-pager")[1], 2).splitlines()
-    nxt = timer[-1][:40] if len(timer) > 1 else "?"
+    nxt = systemctl("show", f"{AGENT_UNIT}.timer", "-p", "NextElapseUSecRealtime", "--value")[1].strip() or "?"
     lines = [f"live MM:    {active(LIVE_UNIT)}{'  (KILL file present)' if KILL.exists() else ''}",
              f"shadow MM:  {active(SHADOW_UNIT)}",
-             f"agent:      timer {active(AGENT_UNIT + '.timer')}, next {nxt.strip()}",
+             f"agent:      timer {active(AGENT_UNIT + '.timer')}, next run {nxt}",
              exchange_line(), ""]
-    lines.append(clean(sh([PY, "mm/shadow_mm.py", "--report"])[1], 4))
+    lines.append(head(sh([PY, "mm/shadow_mm.py", "--report"])[1], 4))     # the summary is at the top
     lines.append("")
     lines.append(clean(sh([PY, "resolve.py", "--positions"])[1], 3))
     return "\n".join(lines)
