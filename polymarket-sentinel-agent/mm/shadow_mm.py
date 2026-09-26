@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS markets(
   cond TEXT PRIMARY KEY, question TEXT, slug TEXT, yes TEXT, rate REAL, min_size REAL, v REAL, tick REAL,
   end_ts REAL, event_ts REAL, capital REAL, shares REAL, tracking INTEGER DEFAULT 1,
   cash REAL DEFAULT 0, inv REAL DEFAULT 0, last_mid REAL, last_trade_ts INTEGER DEFAULT 0,
-  bid REAL, ask REAL, quote_ts INTEGER, settled INTEGER DEFAULT 0, outcome REAL, added_ts REAL);
+  bid REAL, ask REAL, quote_ts INTEGER, settled INTEGER DEFAULT 0, outcome REAL, added_ts REAL,
+  q_bid REAL, q_ask REAL, rem_bid REAL, rem_ask REAL);
 CREATE TABLE IF NOT EXISTS epochs(
   cond TEXT, day TEXT, rate REAL, share_sum REAL DEFAULT 0, samples INTEGER DEFAULT 0, quoted INTEGER DEFAULT 0,
   PRIMARY KEY(cond, day));
@@ -69,6 +70,11 @@ CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 def db():
     con = sqlite3.connect(DB_PATH)
     con.executescript(SCHEMA)
+    for col in ("q_bid", "q_ask", "rem_bid", "rem_ask"):
+        try:
+            con.execute(f"ALTER TABLE markets ADD COLUMN {col} REAL")
+        except sqlite3.OperationalError:
+            pass
     return con
 
 
@@ -123,17 +129,51 @@ def sample_share(bids, asks, mid, v, min_size, bid, ask, shares):
     return ours / (ours + others) if ours > 0 else 0.0
 
 
-def apply_trade(t, bid, ask, inv, shares):
-    """Fill from one real trade against our quote. Returns (side, price, size) or None.
-    A taker selling YES at/below our bid hits us; a taker buying YES at/above our ask lifts us."""
+def size_at(levels, price, tick):
+    return sum(sz for p, sz in levels if abs(p - price) < tick / 2)
+
+
+def apply_trade(t, q, inv, shares, tick):
+    """Fill of our resting quote by one real trade, with price-time priority.
+
+    q = {bid, ask, q_bid, q_ask, rem_bid, rem_ask}: our prices, size queued AHEAD of us at those
+    prices, and what is left of our orders; it is updated in place. A trade through our price
+    means our whole level was consumed; a trade AT our price eats the queue ahead of us first.
+    Returns (side, price, size) or None.
+    """
     yes_px = t["price"] if t["outcome"] == "Yes" else 1 - t["price"]
     sells_yes = (t["side"] == "SELL") == (t["outcome"] == "Yes")
-    if sells_yes and yes_px <= bid + 1e-9:
-        size = min(float(t["size"]), shares - inv)
-        return ("BUY", bid, size) if size > 0 else None
-    if not sells_yes and yes_px >= ask - 1e-9:
-        size = min(float(t["size"]), shares + inv)
-        return ("SELL", ask, size) if size > 0 else None
+    size, half = float(t["size"]), tick / 2
+    if sells_yes and q["bid"] is not None:
+        if yes_px < q["bid"] - half:
+            take = q["rem_bid"]
+            q["q_bid"] = 0
+        elif abs(yes_px - q["bid"]) <= half:
+            ahead = min(q["q_bid"], size)
+            q["q_bid"] -= ahead
+            take = min(size - ahead, q["rem_bid"])
+        else:
+            return None
+        take = min(take, shares - inv)
+        if take <= 0:
+            return None
+        q["rem_bid"] -= take
+        return "BUY", q["bid"], take
+    if not sells_yes and q["ask"] is not None:
+        if yes_px > q["ask"] + half:
+            take = q["rem_ask"]
+            q["q_ask"] = 0
+        elif abs(yes_px - q["ask"]) <= half:
+            ahead = min(q["q_ask"], size)
+            q["q_ask"] -= ahead
+            take = min(size - ahead, q["rem_ask"])
+        else:
+            return None
+        take = min(take, shares + inv)
+        if take <= 0:
+            return None
+        q["rem_ask"] -= take
+        return "SELL", q["ask"], take
     return None
 
 
@@ -247,12 +287,15 @@ def market_trades(cond, since):
 
 
 def step(con, row, now):
-    (cond, yes, rate, min_size, v, tick, end_ts, event_ts, shares, cash, inv, last_ts, bid, ask, quote_ts) = row
+    (cond, yes, rate, min_size, v, tick, end_ts, event_ts, shares, cash, inv, last_ts, bid, ask, quote_ts,
+     q_bid, q_ask, rem_bid, rem_ask) = row
+    q = {"bid": bid, "ask": ask, "q_bid": q_bid or 0.0, "q_ask": q_ask or 0.0,
+         "rem_bid": shares if rem_bid is None else rem_bid, "rem_ask": shares if rem_ask is None else rem_ask}
     day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
     # 1. fills from real trades against the quote that was resting since the last step
     if bid is not None and quote_ts:
         for t in market_trades(cond, max(last_ts, quote_ts)):
-            f = apply_trade(t, bid, ask, inv, shares)
+            f = apply_trade(t, q, inv, shares, tick)
             last_ts = max(last_ts, t["timestamp"])
             if f:
                 side, px, size = f
@@ -268,16 +311,24 @@ def step(con, row, now):
     quoting = mid is not None and not stop and MID_RANGE[0] <= mid <= MID_RANGE[1]
     share = 0.0
     if quoting:
-        bid, ask = our_quote(mid, tick)
-        share = sample_share(bids, asks, mid, v, min_size, bid, ask, shares)
+        nb, na = our_quote(mid, tick)
+        share = sample_share(bids, asks, mid, v, min_size, nb, na, shares)
+        # A live bot leaves an unchanged order in place (keeps its queue spot) and tops it up with a
+        # new order at the back; a moved price means a fresh order behind whatever rests there.
+        if nb != q["bid"]:
+            q["q_bid"] = size_at(bids, nb, tick)
+        if na != q["ask"]:
+            q["q_ask"] = size_at(asks, na, tick)
+        q.update(bid=nb, ask=na, rem_bid=shares, rem_ask=shares)
     else:
-        bid = ask = None
+        q.update(bid=None, ask=None)
     con.execute("INSERT OR IGNORE INTO epochs(cond, day, rate) VALUES(?,?,?)", (cond, day, rate))
     con.execute("UPDATE epochs SET share_sum=share_sum+?, samples=samples+1, quoted=quoted+? WHERE cond=? AND day=?",
                 (share, int(quoting), cond, day))
     con.execute("UPDATE markets SET cash=?, inv=?, last_trade_ts=?, bid=?, ask=?, quote_ts=?, last_mid=COALESCE(?, last_mid),"
-                " tracking=? WHERE cond=?",
-                (cash, inv, last_ts, bid, ask, int(now) if quoting else None, mid, int(not stop), cond))
+                " tracking=?, q_bid=?, q_ask=?, rem_bid=?, rem_ask=? WHERE cond=?",
+                (cash, inv, last_ts, q["bid"], q["ask"], int(now) if quoting else None, mid, int(not stop),
+                 q["q_bid"], q["q_ask"], q["rem_bid"], q["rem_ask"], cond))
 
 
 def settle(con):
@@ -305,7 +356,8 @@ def run():
                 settle(con)
                 last_select = started
             rows = con.execute("SELECT cond, yes, rate, min_size, v, tick, end_ts, event_ts, shares, cash, inv,"
-                               " last_trade_ts, bid, ask, quote_ts FROM markets WHERE tracking=1").fetchall()
+                               " last_trade_ts, bid, ask, quote_ts, q_bid, q_ask, rem_bid, rem_ask"
+                               " FROM markets WHERE tracking=1").fetchall()
             for row in rows:
                 try:
                     step(con, row, time.time())

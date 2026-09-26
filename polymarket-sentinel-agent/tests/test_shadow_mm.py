@@ -36,21 +36,39 @@ def test_sample_share_alone_vs_crowded_book():
     assert crowded < 0.01
 
 
+def quote(q_bid=0.0, q_ask=0.0, rem=100):
+    return {"bid": 0.49, "ask": 0.51, "q_bid": q_bid, "q_ask": q_ask, "rem_bid": rem, "rem_ask": rem}
+
+
 @pytest.mark.parametrize("trade,expect", [
-    ({"side": "SELL", "outcome": "Yes", "price": 0.48, "size": 50}, ("BUY", 0.49, 50)),    # hits our bid
-    ({"side": "BUY", "outcome": "No", "price": 0.52, "size": 50}, ("BUY", 0.49, 50)),      # = sell YES at .48
-    ({"side": "BUY", "outcome": "Yes", "price": 0.52, "size": 50}, ("SELL", 0.51, 50)),    # lifts our ask
-    ({"side": "SELL", "outcome": "No", "price": 0.48, "size": 50}, ("SELL", 0.51, 50)),    # = buy YES at .52
+    ({"side": "SELL", "outcome": "Yes", "price": 0.49, "size": 50}, ("BUY", 0.49, 50)),    # at our bid
+    ({"side": "BUY", "outcome": "No", "price": 0.51, "size": 50}, ("BUY", 0.49, 50)),      # = sell YES at .49
+    ({"side": "BUY", "outcome": "Yes", "price": 0.51, "size": 50}, ("SELL", 0.51, 50)),    # at our ask
+    ({"side": "SELL", "outcome": "No", "price": 0.49, "size": 50}, ("SELL", 0.51, 50)),    # = buy YES at .51
     ({"side": "BUY", "outcome": "Yes", "price": 0.50, "size": 50}, None),                  # inside our spread
 ])
 def test_apply_trade_directions(trade, expect):
-    assert S.apply_trade(trade, 0.49, 0.51, 0, 100) == expect
+    assert S.apply_trade(trade, quote(), 0, 100, 0.01) == expect
+
+
+def test_queue_ahead_is_filled_first():
+    q = quote(q_bid=80)
+    t = {"side": "SELL", "outcome": "Yes", "price": 0.49, "size": 50}
+    assert S.apply_trade(t, q, 0, 100, 0.01) is None and q["q_bid"] == 30
+    assert S.apply_trade(t, q, 0, 100, 0.01) == ("BUY", 0.49, 20)
+
+
+def test_trade_through_our_price_fills_whole_remaining_order():
+    q = quote(q_bid=500, rem=100)
+    t = {"side": "SELL", "outcome": "Yes", "price": 0.45, "size": 5}
+    assert S.apply_trade(t, q, 0, 100, 0.01) == ("BUY", 0.49, 100)
+    assert S.apply_trade(t, q, 100, 100, 0.01) is None          # order used up
 
 
 def test_apply_trade_caps_inventory():
     t = {"side": "SELL", "outcome": "Yes", "price": 0.40, "size": 500}
-    assert S.apply_trade(t, 0.49, 0.51, 80, 100) == ("BUY", 0.49, 20)
-    assert S.apply_trade(t, 0.49, 0.51, 100, 100) is None
+    assert S.apply_trade(t, quote(), 80, 100, 0.01) == ("BUY", 0.49, 20)
+    assert S.apply_trade(t, quote(), 100, 100, 0.01) is None
 
 
 def test_event_start_from_description_and_game_time():
@@ -72,3 +90,27 @@ def test_group_key_joins_sibling_brackets():
     c = S.group_key("Will the highest temperature in Seoul be 26°C on September 27?")
     e = S.group_key("Will the highest temperature in Helsinki be 17°C on September 27?")
     assert a == b == d and a != c and c != e
+
+
+def test_step_end_to_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "DB_PATH", tmp_path / "mm.db")
+    con = S.db()
+    far = 4_000_000_000
+    con.execute("INSERT INTO markets(cond,question,yes,rate,min_size,v,tick,end_ts,capital,shares,last_trade_ts)"
+                " VALUES('c','Q?','y',144,20,4.5,0.01,?,100,100,0)", (far,))
+    book = ([(0.49, 300), (0.45, 1000)], [(0.51, 300), (0.55, 1000)])
+    monkeypatch.setattr(S, "book", lambda token: book)
+    trades = []
+    monkeypatch.setattr(S, "market_trades", lambda cond, since: [t for t in trades if t["timestamp"] > since])
+    cols = ("SELECT cond, yes, rate, min_size, v, tick, end_ts, event_ts, shares, cash, inv, last_trade_ts,"
+            " bid, ask, quote_ts, q_bid, q_ask, rem_bid, rem_ask FROM markets")
+    S.step(con, con.execute(cols).fetchone(), 1000)             # places quote 0.49/0.51 behind 300 each
+    m = con.execute("SELECT bid, ask, q_bid, rem_bid FROM markets").fetchone()
+    assert m == (0.49, 0.51, 300, 100)
+    trades += [{"timestamp": 1010, "side": "SELL", "outcome": "Yes", "price": 0.49, "size": 350}]
+    S.step(con, con.execute(cols).fetchone(), 1060)             # 300 ahead eaten, we get 50
+    cash, inv, q_bid = con.execute("SELECT cash, inv, q_bid FROM markets").fetchone()
+    assert inv == 50 and cash == pytest.approx(-0.49 * 50) and q_bid == 0   # same price -> keeps queue spot
+    share_sum, samples = con.execute("SELECT share_sum, samples FROM epochs").fetchone()
+    assert samples == 2 and 0 < share_sum < 2
+    assert "trading P&L" in S.text_report(con)
