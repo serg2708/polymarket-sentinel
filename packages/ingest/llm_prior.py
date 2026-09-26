@@ -15,6 +15,7 @@ import json
 import re
 from datetime import datetime, timezone, timedelta
 
+import httpx
 import structlog
 
 from ..common.settings import get_settings
@@ -41,6 +42,20 @@ CRITICAL — bracketed / multi-outcome markets:
   If $X is far below a recent known reference (last funding round / valuation /
   price), a YES here is a down-round / collapse scenario and is VERY unlikely
   even if the event itself is uncertain. Treat such brackets as low probability.
+- "Between X and Y" is a BOUNDED BAND, not a threshold. "It will exceed X" is a
+  DIFFERENT claim and does NOT support this bracket — exceeding X by a lot lands
+  in a HIGHER bracket and pays nothing here. Evidence that the value will be
+  strong/high is an argument AGAINST a band that sits below the expected level.
+  A narrow band deserves a low probability unless the expected value lands
+  squarely inside it.
+
+CRITICAL — "hit (HIGH) $X" / "hit (LOW) $X" touch markets:
+- "(HIGH) $X" resolves YES only if the price RISES to $X or above. "(LOW) $X"
+  resolves YES only if the price FALLS to $X or below. They are opposite legs.
+- Check the direction of your own evidence before answering. News that prices
+  are RISING supports the (HIGH) legs and argues AGAINST every (LOW) leg, and
+  vice versa. Never cite an upward catalyst as a reason a (LOW) market is
+  underpriced.
 
 CRITICAL — "will X launch a token" markets:
 - These resolve YES only for the project's OWN network/governance token (a TGE
@@ -92,7 +107,11 @@ _LOW_QUALITY_SOURCES = {
 }
 
 # Numeric money/threshold detection for the bracket sanity gate
-_MONEY_RE = re.compile(r"\$\s?\d[\d.,]*\s?(?:billion|trillion|million|[bmt])\b", re.IGNORECASE)
+# Polymarket writes amounts both as "$1.2b" and bare "940m" (no dollar sign), and
+# commodity ladders use a plain "$80" with no magnitude suffix. Match all three.
+_MONEY_RE = re.compile(
+    r"\$\s?\d[\d.,]*\s?(?:billion|trillion|million|[bmt])?\b"
+    r"|\b\d[\d.,]*\s?(?:billion|trillion|million|[bmt])\b", re.IGNORECASE)
 _BRACKET_RE = re.compile(
     r"\b(between|less than|greater than|at least|no more than|or greater|or more|"
     r"or less|below|above|under|over)\b", re.IGNORECASE)
@@ -101,6 +120,12 @@ _NO_EVENT_RE = re.compile(
     r'resolve(?:s|d)? to ["\']?no\b', re.IGNORECASE)
 _LOW_BRACKET_RE = re.compile(
     r"\b(less than|below|under|no more than|or less)\b\s*\$?\s?\d", re.IGNORECASE)
+# Two-sided band: one slot of a ladder ("between 940m and 950m").
+_BAND_RE = re.compile(
+    r"\bbetween\b\s*\$?\s?\d[\d.,]*\s?(?:billion|trillion|million|[bmt])?\s*"
+    r"(?:and|to|[-–—])\s*\$?\s?\d", re.IGNORECASE)
+# Downside touch leg of a commodity ladder: "hit (LOW) $80".
+_LOW_TOUCH_RE = re.compile(r"\(?\s*\blow\b\s*\)?\s*\$?\s?\d", re.IGNORECASE)
 
 
 def is_multibracket_numeric(question: str, description: str) -> bool:
@@ -117,6 +142,41 @@ def is_multibracket_numeric(question: str, description: str) -> bool:
 def is_low_numeric_bracket(question: str) -> bool:
     """True for the lowest 'less than $X' bracket — the one most often mis-mapped."""
     return bool(_LOW_BRACKET_RE.search(question or ""))
+
+
+def is_bounded_band(question: str) -> bool:
+    """True for a two-sided numeric band ("between 940m and 950m") — one slot of
+    a ladder. An LLM arguing the value will be *high* is supporting some OTHER
+    slot, not this one; "above X" and "in [X, Y]" are different claims."""
+    return bool(_BAND_RE.search(question or ""))
+
+
+def is_low_touch_threshold(question: str) -> bool:
+    """True for the downside leg of a touch ladder ("hit (LOW) $80"), which
+    resolves YES only if the price FALLS to the level. A bullish argument here
+    is pointing at the (HIGH) legs instead."""
+    return bool(_LOW_TOUCH_RE.search(question or ""))
+
+
+def bracket_phantom_edge_reason(question: str, description: str) -> str | None:
+    """Reason why an 'underpriced → BUY YES' on this market is structurally
+    suspect, or None when nothing looks wrong.
+
+    tail_risk and llm_prior only ever fire in the BUY YES direction, so these
+    ladder shapes are where a phantom edge shows up: the model reasons about a
+    threshold ("will exceed X", "prices are rising") and attaches the conclusion
+    to a slot that needs something narrower or the opposite direction.
+    """
+    if is_multibracket_numeric(question, description) and is_low_numeric_bracket(question):
+        return ("low numeric bracket of multi-outcome market — likely "
+                "'no event' conflated into '< $X'")
+    if is_bounded_band(question):
+        return ("two-sided numeric band — 'the value will be high' argues for a "
+                "different slot of the ladder, not this bounded one")
+    if is_low_touch_threshold(question):
+        return ("'(LOW) $X' touch market resolves YES only if the price FALLS "
+                "to $X — a bullish signal here supports the (HIGH) legs")
+    return None
 
 
 def _article_date(a: dict) -> str:
@@ -309,6 +369,68 @@ async def estimate_probability(
     return p, conf
 
 
+def _snippet(a: dict, n: int = 220) -> str:
+    text = (a.get("description") or a.get("summary") or "").replace("\n", " ").strip()
+    return text[:n]
+
+
+def llm_backend_label() -> str:
+    """Which model actually answers tail_risk / llm_prior, for alert text."""
+    s = get_settings()
+    if s.nvidia_api_key:
+        return s.nvidia_model
+    if s.ollama_primary:
+        return s.ollama_model
+    return "claude-haiku-4.5"
+
+
+GAMMA = "https://gamma-api.polymarket.com"
+
+
+async def sibling_markets(event_slug: str, market_id: str,
+                          end_date: str | None = None) -> tuple[str, list[dict]]:
+    """Other markets of the same event (e.g. "by Sep 22 / Sep 30 / Oct 31").
+
+    Returns (prompt block, earlier-deadline siblings that resolved NO). Never raises.
+    """
+    if not event_slug:
+        return "", []
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(f"{GAMMA}/events", params={"slug": event_slug})
+            r.raise_for_status()
+            events = r.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        log.debug("sibling_markets_error", event_slug=event_slug, error=str(exc))
+        return "", []
+    lines, resolved_no, own_end = [], [], (end_date or "")[:10]
+    markets = (events[0].get("markets") if events else None) or []
+    for m in markets:
+        if str(m.get("id")) == str(market_id):
+            own_end = own_end or (m.get("endDate") or "")[:10]
+    for m in markets:
+        if str(m.get("id")) == str(market_id):
+            continue
+        try:
+            raw = m.get("outcomePrices") or "[]"
+            prices = [float(x) for x in (json.loads(raw) if isinstance(raw, str) else raw)]
+        except (ValueError, TypeError):
+            continue
+        if len(prices) != 2:
+            continue
+        q, end = (m.get("question") or "")[:120], (m.get("endDate") or "")[:10]
+        if m.get("closed") and max(prices) >= 0.99:
+            outcome = "YES" if prices[0] > prices[1] else "NO"
+            lines.append(f'- "{q}" — RESOLVED {outcome} (deadline {end})')
+            if outcome == "NO" and own_end and end < own_end:
+                resolved_no.append({"question": q, "end": end})
+        elif not m.get("closed"):
+            lines.append(f'- "{q}" — trading at {prices[0] * 100:.0f}% (deadline {end})')
+    if not lines:
+        return "", []
+    return "Other markets of the same event:\n" + "\n".join(lines[:12]), resolved_no
+
+
 # ── Tail-risk underpricing analysis ──────────────────────────────────────────
 
 TAIL_RISK_PROMPT = """\
@@ -320,6 +442,8 @@ The market currently prices this event at only {market_p_pct}%.
 Question: {question}
 
 Resolution criteria: {resolution}
+
+{siblings_block}
 
 {news_block}
 
@@ -339,6 +463,14 @@ Reply ONLY with valid JSON, no markdown:
 {{"probability": <0.02-0.80>, "confidence": <0.0-1.0>, "underpriced": <true|false>, "key_signal": "<one concrete sentence — the single fact that most changes the probability>"}}
 
 Rules:
+- RESOLUTION MECHANISM FIRST. Many markets resolve on an announcement by a named
+  source (a government, agency, company), not on the event itself. News that the
+  event happened "according to sources" / "reportedly" / per a third party does NOT
+  satisfy a criterion that requires an official announcement from that source.
+  If the criteria exclude third-party claims, such reports are NOT evidence of YES.
+- SIBLING MARKETS are hard evidence. If an earlier-deadline market of the same
+  event resolved NO even though the news you see predates that deadline, that
+  news did not meet the criteria — do not count it again here.
 - underpriced=true ONLY when specific evidence genuinely raises the probability above the market
 - confidence = quality of evidence: 0.9 = strong fresh specific news, 0.65 = moderate signal, 0.4 = speculative
 - If NO relevant news provided but you have strong pre-cutoff knowledge (structural facts, historical base rates, known tournament dynamics): confidence may reach 0.65 and underpriced=true if justified
@@ -360,6 +492,7 @@ async def estimate_tail_risk(
     today: str,
     recent_news: list[dict] | None = None,
     model: str = "claude-haiku-4-5-20251001",
+    siblings_block: str = "",
 ) -> tuple[float, float, bool, str] | None:
     """Analyse whether a low-probability market is underpriced given recent news.
 
@@ -385,18 +518,23 @@ async def estimate_tail_risk(
     news_block = ""
     fresh_news = _filter_news(recent_news or [])
     if fresh_news:
+        # Snippet, not just the title: headlines drop qualifiers like "sources say"
+        # that decide whether a report meets the resolution criteria.
         headlines = "\n".join(
             f"- [{_article_date(a)}] {a.get('title', '')}"
+            + (f"\n  {_snippet(a)}" if _snippet(a) else "")
             for a in fresh_news[:8]
         )
         news_block = f"Recent relevant headlines (newest first):\n{headlines}"
 
-    resolution = (description or "")[:1000] or "Same as question title."
+    # Full rules: exclusions and the resolution source sit at the end of the text.
+    resolution = (description or "")[:6000] or "Same as question title."
     prompt = TAIL_RISK_PROMPT.format(
         today=today,
         market_p_pct=round(market_p * 100, 1),
         question=question[:300],
         resolution=resolution,
+        siblings_block=siblings_block,
         news_block=news_block,
         bracket_rules=BRACKET_RULES,
     )
@@ -423,11 +561,11 @@ async def estimate_tail_risk(
     # numeric bracket of a multi-outcome market ("< $X" with a separate "No event"
     # outcome), an underpriced YES is almost always the LLM folding "event won't
     # happen" into the low bracket — a phantom edge. Suppress and flag for review.
-    if underpriced and is_multibracket_numeric(question, description) and is_low_numeric_bracket(question):
+    bracket_reason = bracket_phantom_edge_reason(question, description) if underpriced else None
+    if bracket_reason:
         log.warning("tail_risk_bracket_suppressed", market_id=market_id,
                     question=question[:80], claude_p=round(p, 3),
-                    reason="low numeric bracket of multi-outcome market — "
-                           "likely 'no event' conflated into '< $X'; manual review")
+                    reason=f"{bracket_reason}; manual review")
         underpriced = False
 
     log.info("tail_risk_estimated", market_id=market_id,

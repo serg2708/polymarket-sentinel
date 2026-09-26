@@ -86,6 +86,14 @@ def _rule_reliability(rule_notes: str | None, approved_by: str | None) -> str:
     return f"ℹ️ {e(rule_notes[:100])}\n"
 
 
+# LLM-driven signals (tail_risk, soft_edge from llm_prior, news_divergence) lost money
+# in backtest: 85 resolved markets, May–Sep 2026, ≈ −51% of stake at $10/signal; the
+# market was better calibrated than the model. Until the weekly backtest shows an edge,
+# they are shown for observation only — no bet size, no Kelly.
+EXPERIMENTAL = ("🧪 <b>EXPERIMENTAL — watch only, do not bet.</b>\n"
+                "Backtest: LLM signals lost ≈50% of stake (85 resolved, May–Sep 2026).\n")
+
+
 def format_soft_edge(a: dict) -> str:
     source = a.get("source", "model")
     emoji  = KIND_EMOJI.get(a.get("kind", ""), "🎯")
@@ -111,7 +119,9 @@ def format_soft_edge(a: dict) -> str:
     elif source == "predictit":
         source_warning = "⚠️ PredictIt = real money, but 10% profit fee — budget ≥3 pp edge\n"
     elif source == "llm_prior":
-        source_warning = "🤖 Claude estimate — cross-check manually before acting\n"
+        source_warning = EXPERIMENTAL
+        kelly_label = ""
+        direction = direction.replace("BUY YES", "model leans YES").replace("BUY NO", "model leans NO")
 
     return (
         f"{emoji} <b>SOFT EDGE</b> — <code>{e(source.upper())}</code>\n"
@@ -121,7 +131,7 @@ def format_soft_edge(a: dict) -> str:
         f"Market: <code>{_c(market_ask)}</code>\n"
         f"Gap: <code>{edge_pp:+.1f} pp</code>  "
         f"EV per $1: <code>{ev:+.3f}</code>\n"
-        f"{kelly_label}\n"
+        + (f"{kelly_label}\n" if kelly_label else "")
         + source_warning
         + reliability
     )
@@ -133,31 +143,24 @@ def format_tail_risk(a: dict) -> str:
     confidence = float(a.get("confidence") or 0)
     edge_pp    = float(a.get("edge_pp") or 0)
     ev         = float(a.get("ev_per_dollar") or 0)
-    kelly_pct  = float(a.get("kelly_fraction") or 0) * 100
     key_signal = a.get("key_signal") or ""
 
-    # Trade rule: only act at confidence >= 0.80 (+ gap >= 10pp, verify news).
-    # Below 0.80 the signal is watch-only — do NOT show a bet size, since that
-    # encourages trades the rules forbid (this is how the MegaETH/NATO longshots
-    # were bought at confidence 0.65 and went to zero).
-    if confidence >= 0.90:
-        action = "💰 Suggested bet: <b>$20–$50</b> YES  (→ Polymarket ↑)\n"
-    elif confidence >= 0.80:
-        action = "💰 Suggested bet: <b>$10–$25</b> YES  (→ Polymarket ↑)\n"
+    if edge_pp > 30:
+        # A 30pp+ gap on a traded market is almost always the model misreading the
+        # rules (e.g. counting "sources say" where an official announcement is required).
+        action = (EXPERIMENTAL + f"⚠️ Gap {edge_pp:.0f} pp is suspiciously large — "
+                  f"likely a misread of the resolution rules.\n")
     else:
-        action = (f"⚠️ <b>WATCH ONLY — confidence {confidence * 100:.0f}% &lt; 80%</b>\n"
-                  f"Below trade threshold. Do NOT buy on this alone — needs a "
-                  f"concrete fresh catalyst + manual news check.\n")
+        action = EXPERIMENTAL
 
     return (
         f"🎯 <b>TAIL RISK — UNDERPRICED</b>\n"
         f"<b>{e(a.get('title'))}</b>\n\n"
-        f"📈 <b>BUY YES @ {_c(market_p)}</b>\n"
-        f"Claude est: <code>{claude_p * 100:.1f}%</code>  "
+        f"📈 Model leans YES — market <b>{_c(market_p)}</b>\n"
+        f"{e(a.get('model') or 'LLM')} est: <code>{claude_p * 100:.1f}%</code>  "
         f"Gap: <code>+{edge_pp:.1f} pp</code>  "
         f"EV: <code>+{ev:.2f}$/1$</code>\n"
-        f"Confidence: <code>{confidence * 100:.0f}%</code>  "
-        f"Kelly ½: <code>{kelly_pct:.1f}%</code>\n\n"
+        f"Confidence: <code>{confidence * 100:.0f}%</code>\n\n"
         f"💡 {e(key_signal)}\n"
         + action
     )
@@ -173,11 +176,11 @@ def format_news_divergence(a: dict) -> str:
     articles   = a.get("recent_articles") or []
 
     if direction == "YES_underpriced":
-        action = f"📈 <b>BUY YES @ {_c(market_p)}</b>"
+        action = f"📈 Model leans YES — market <b>{_c(market_p)}</b>"
         sentiment_label = "positive"
     else:
         no_price = 1.0 - market_p
-        action = f"📉 <b>BUY NO @ {_c(no_price)}</b>"
+        action = f"📉 Model leans NO — NO at <b>{_c(no_price)}</b>"
         sentiment_label = "negative"
 
     headlines = []
@@ -198,7 +201,7 @@ def format_news_divergence(a: dict) -> str:
         f"  Articles: <code>{n_articles}</code>\n\n"
         + reason_line
         + headlines_block + ("\n" if headlines_block else "")
-        + "💰 Suggested: <b>$5–$15</b>  (→ Polymarket ↑)\n"
+        + EXPERIMENTAL
     )
 
 

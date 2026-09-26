@@ -18,6 +18,7 @@ services:
       resources:
         limits:
           memory: 2G      # actual ~400MB, 5× headroom for cache growth
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -42,6 +43,7 @@ services:
       resources:
         limits:
           memory: 768M    # Redis self-caps at 512MB; extra for OS overhead
+    restart: unless-stopped
 
   # ollama service disabled — using host-installed Ollama (OLLAMA_HOST=0.0.0.0)
   # ollama:

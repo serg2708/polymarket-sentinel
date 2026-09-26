@@ -42,6 +42,9 @@ from ..ingest.llm_prior import (
     estimate_tail_risk,
     is_multibracket_numeric,
     is_low_numeric_bracket,
+    bracket_phantom_edge_reason,
+    llm_backend_label,
+    sibling_markets,
     _filter_news,
 )
 from ..models.calibration import snapshot_calibration as _snapshot_calibration, mark_resolved
@@ -507,14 +510,13 @@ async def run_llm_prior_detection(pool: asyncpg.Pool, redis_client) -> None:
         # BUY YES — almost always the LLM folding "event won't happen" into the
         # low bracket. Suppress that direction; a prior below market (BUY NO) is fine.
         description = row["description"] or ""
-        if (llm_p > poly_ask
-                and is_multibracket_numeric(question, description)
-                and is_low_numeric_bracket(question)):
+        bracket_reason = (bracket_phantom_edge_reason(question, description)
+                          if llm_p > poly_ask else None)
+        if bracket_reason:
             log.warning("llm_prior_bracket_suppressed", market_id=market_id,
                         question=question[:80], llm_p=round(llm_p, 3),
                         poly_ask=round(poly_ask, 3),
-                        reason="low numeric bracket — likely 'no event' conflated "
-                               "into '< $X'; manual review")
+                        reason=f"{bracket_reason}; manual review")
             continue
 
         hit = llm_prior_soft_edge(
@@ -746,6 +748,8 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
             news = market_news
         log.debug("tail_risk_news", market_id=market_id, specific=len(market_news), total=len(news))
 
+        siblings_block, siblings_no = await sibling_markets(row.get("event_slug") or "", market_id)
+
         result = await estimate_tail_risk(
             market_id=market_id,
             question=question,
@@ -754,6 +758,7 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
             redis_client=redis_client,
             today=today,
             recent_news=news,
+            siblings_block=siblings_block,
         )
         if result is None:
             continue
@@ -761,7 +766,7 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
         claude_p, confidence, underpriced, key_signal = result
 
         # Must be explicitly flagged as underpriced with meaningful confidence.
-        if not underpriced or confidence < 0.65:
+        if not underpriced or confidence < 0.70:
             log.debug("tail_risk_skip", market_id=market_id,
                       underpriced=underpriced, confidence=confidence)
             continue
@@ -773,6 +778,17 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
             continue
 
         edge_pp = (claude_p - poly_p) * 100
+
+        # An earlier-deadline market of this event already resolved NO, yet the model
+        # sees a big edge: the market had the same news and it didn't meet the criteria
+        # (Saudi East-West: "restarted, sources say" → Sep 22 resolved NO → phantom
+        # 49pp signal on Sep 30). A liquid market doesn't leave that much on the table.
+        if siblings_no and edge_pp > 25:
+            log.warning("tail_risk_sibling_resolved_no_suppressed", market_id=market_id,
+                        question=question[:80], claude_p=round(claude_p, 3), edge_pp=round(edge_pp, 1),
+                        sibling=siblings_no[0]["question"][:80])
+            continue
+
         ev = (claude_p - poly_p) / poly_p
         kf = kelly_fraction(claude_p, poly_p) * 0.5  # halve Kelly: Claude estimate, not certainty
 
@@ -795,6 +811,7 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
                 "claude_p": round(claude_p, 4),
                 "confidence": round(confidence, 2),
                 "key_signal": key_signal,
+                "model": llm_backend_label(),
                 "edge_pp": round(edge_pp, 1),
                 "ev_per_dollar": round(ev, 4),
                 "kelly_fraction": round(kf, 4),
@@ -804,7 +821,7 @@ async def run_tail_risk_detection(pool: asyncpg.Pool, redis_client) -> None:
             await insert_alert(pool, "tail_risk", group_key, alert, edge_bps)
             log.info("tail_risk_alert", market_id=market_id,
                      market_p=poly_p, claude_p=claude_p,
-                     confidence=confidence, order_flow=has_order_flow)
+                     confidence=confidence, edge_pp=round(edge_pp, 1))
             fired += 1
 
         await snapshot_calibration(pool, redis_client,

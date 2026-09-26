@@ -31,6 +31,7 @@ from ..common.metrics import (
 )
 from ..common.settings import get_settings
 from ..models.calibration import mark_resolved
+from .resolution import resolve_pending_outcomes
 from .polymarket import (
     fetch_active_events,
     fetch_active_markets,
@@ -301,6 +302,18 @@ async def main() -> None:
         hours=6,
         args=[redis_client],
         id="news_refresh",
+    )
+
+    # Score past predictions against realised outcomes. The market WS channel
+    # never emits market_resolved, so this poll is the only thing that closes
+    # the feedback loop — without it hit-rate and calibration stay unknowable.
+    scheduler.add_job(
+        resolve_pending_outcomes,
+        "interval",
+        hours=1,
+        args=[pool],
+        id="resolution_refresh",
+        next_run_time=datetime.now(timezone.utc),
     )
 
     scheduler.start()

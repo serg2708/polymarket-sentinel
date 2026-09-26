@@ -41,7 +41,7 @@ async def fetch_active_events(limit: int = 500) -> list[dict]:
                 "closed": "false",
                 "limit": page_size,
                 "offset": offset,
-                "order": "volume_24hr",
+                "order": "volume24hr",
                 "ascending": "false",
             },
         )
@@ -71,7 +71,7 @@ async def fetch_active_markets(limit: int = 300, top_n: int = 500) -> list[dict]
                 "closed": "false",
                 "limit": min(limit, top_n - len(out)),
                 "offset": offset,
-                "order": "volume_24hr",
+                "order": "volume24hr",
                 "ascending": "false",
             },
         )
