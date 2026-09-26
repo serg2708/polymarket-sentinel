@@ -107,6 +107,9 @@ class DryRunExchange:
     def fills_since(self, ts):
         return []
 
+    def earnings(self, day):
+        return None
+
     def scoring(self, ids):
         return {}
 
@@ -182,6 +185,10 @@ class LiveExchange:
 
     def scoring(self, ids):
         return self.sc.get_orders_scoring(order_ids=list(ids)) if ids else {}
+
+    def earnings(self, day):
+        """Liquidity rewards the exchange has accrued to us for a UTC day (paid out after midnight)."""
+        return float(sum(e.earnings for e in self.sc.get_total_earnings_for_user_for_day(date=day)))
 
 
 # --- strategy (pure, unit-tested) -------------------------------------------------------------------
@@ -345,9 +352,15 @@ class Runner:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if day != self.day:
             if self.day is not None:
+                try:
+                    rew = self.ex.earnings(self.day)
+                except Exception as e:
+                    log.warning("earnings: %s", e)
+                    rew = None
                 self.notify(f"🧮 <b>day {self.day}</b>\n"
-                     f"equity ${self.day_start_equity:.2f} → ${eq:.2f} ({eq - self.day_start_equity:+.2f}, "
-                     f"includes rewards paid at 00:00 UTC)\n{self.scoring_line()}")
+                            f"rewards accrued (exchange): {'n/a' if rew is None else f'${rew:.2f}'}\n"
+                            f"equity ${self.day_start_equity:.2f} → ${eq:.2f} ({eq - self.day_start_equity:+.2f}; "
+                            f"the day's rewards land in cash shortly after 00:00 UTC)\n{self.scoring_line()}")
             self.day, self.day_start_equity = day, eq
         self.con.execute("INSERT INTO equity VALUES(?,?,?,?)", (time.time(), day, eq, cash))
         self.con.commit()
