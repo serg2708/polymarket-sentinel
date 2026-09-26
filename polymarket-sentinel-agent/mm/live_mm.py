@@ -142,11 +142,13 @@ class LiveExchange:
         r = self.sc.place_limit_order(token_id=token, price=str(price), size=str(size), side="BUY", post_only=True)
         if not r.ok:
             raise RuntimeError(f"order rejected: {getattr(r, 'code', '')} {getattr(r, 'message', '')}")
+        log.info("placed BUY %s @ %.3f x %.1f", token[-6:], price, size)
         return r.order_id
 
     def cancel(self, ids):
         if ids:
             self.sc.cancel_orders(order_ids=list(ids))
+            log.info("cancelled %d order(s)", len(ids))
 
     def cancel_market(self, cond):
         self.sc.cancel_market_orders(market=cond)
@@ -383,6 +385,7 @@ def main():
     ap.add_argument("--live", action="store_true", help="send real orders (also needs MM_LIVE=1)")
     a = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)      # one line per HTTP call drowns the log
     conds = a.markets.split(",") if a.markets else best_from_shadow(a.auto or 2)
     if not conds:
         raise SystemExit("no markets: shadow MM has no market with a positive net result yet")
