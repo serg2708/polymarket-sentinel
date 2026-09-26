@@ -105,3 +105,12 @@ def test_live_flag_needs_env(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["live_mm.py", "--live", "--markets", "c1"])
     with pytest.raises(SystemExit, match="MM_LIVE"):
         L.main()
+
+
+def test_bot_never_touches_orders_outside_its_markets(runner):
+    runner.ex.orders["manual"] = {"id": "manual", "cond": "other", "token": "T", "price": 0.3, "size": 10}
+    runner.quote_market(runner.markets[0], 1000)
+    runner.cancel_own()
+    assert set(runner.ex.orders) == {"manual"}
+    runner.kill("test")
+    assert "manual" in runner.ex.orders

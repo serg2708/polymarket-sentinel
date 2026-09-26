@@ -7,7 +7,8 @@ needed to quote. Safety, in order of importance:
 
   * exchange heartbeat — Polymarket cancels ALL our orders if a heartbeat is missed for 10 s, so a
     crash, network loss or power cut never leaves quotes on the book
-  * cancel-all on start, on exit (SIGTERM/SIGINT) and when the KILL file exists
+  * our orders cancelled on start, on exit (SIGTERM/SIGINT) and when the KILL file exists (only on
+    the bot's markets; the exchange heartbeat, however, cancels EVERY order on the account)
   * daily loss limit on marked equity -> cancel-all + KILL + Telegram
   * per-market inventory cap (stop bidding the side we already hold too much of)
   * quotes pulled STOP_BEFORE_EVENT before the event, outside [0.10, 0.90], < 1 h before end
@@ -93,6 +94,9 @@ class DryRunExchange:
     def cancel_all(self):
         self.cancel(list(self.orders))
 
+    def cancel_market(self, cond):
+        self.cancel([i for i, o in self.orders.items() if o["cond"] == cond])
+
     def heartbeat(self):
         pass
 
@@ -150,6 +154,9 @@ class LiveExchange:
 
     def cancel_all(self):
         self.client.cancel_all()
+
+    def cancel_market(self, cond):
+        self.client.cancel_market_orders(market=cond)
 
     def heartbeat(self):
         r = self.client.post_heartbeat(self.hb_id)
@@ -264,10 +271,15 @@ class Runner:
                 log.warning("heartbeat failed: %s", e)
             self.stop.wait(HEARTBEAT_S)
 
+    def cancel_own(self):
+        """Cancel our orders only — the account may also hold the owner's manual orders."""
+        for m in self.markets:
+            self.ex.cancel_market(m["cond"])
+
     def kill(self, why):
         log.error("KILL: %s", why)
         try:
-            self.ex.cancel_all()
+            self.cancel_own()
         finally:
             KILL.write_text(f"{datetime.now(timezone.utc).isoformat()} {why}\n")
             send(f"🛑 <b>Live MM stopped</b>: {esc(why)}. All orders cancelled. Remove <code>mm/KILL</code> to restart.")
@@ -325,7 +337,7 @@ class Runner:
     def run(self):
         if KILL.exists():
             raise SystemExit(f"{KILL} exists — remove it to start")
-        self.ex.cancel_all()                          # clean slate
+        self.cancel_own()                             # clean slate on our markets
         signal.signal(signal.SIGTERM, lambda *a: self.stop.set())
         threading.Thread(target=self.heartbeat_loop, daemon=True).start()
         send(f"▶️ Live MM started ({'LIVE' if self.live else 'dry-run'}): " +
@@ -359,9 +371,9 @@ class Runner:
         finally:
             self.stop.set()
             try:
-                self.ex.cancel_all()
+                self.cancel_own()
             finally:
-                log.info("stopped, all orders cancelled")
+                log.info("stopped, our orders cancelled")
 
 
 def main():
