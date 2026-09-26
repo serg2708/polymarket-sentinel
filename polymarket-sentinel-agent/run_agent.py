@@ -110,7 +110,7 @@ def fetch_candidates(con):
 def ask_claude(markets):
     blind = [{k: m[k] for k in ("id", "question", "description", "created", "end_date")} for m in markets]
     prompt = (C.PROMPT_PATH.read_text()
-              .replace("{{TODAY}}", now().date().isoformat())
+              .replace("{{TODAY}}", now().strftime("%Y-%m-%d %H:%M UTC"))
               .replace("{{MARKETS}}", json.dumps(blind, ensure_ascii=False, indent=1)))
     blocked = [f"WebFetch(domain:{d})" for d in C.PRICE_LEAK_DOMAINS if "." in d]
     cmd = [C.CLAUDE_BIN, "-p", prompt, "--output-format", "json",
@@ -122,13 +122,8 @@ def ask_claude(markets):
     env = json.loads(res.stdout)
     if env.get("is_error"):
         raise RuntimeError(f"claude error (limits?): {str(env)[:500]}")
-    text = env.get("result", "")
-    a, b = text.find("["), text.rfind("]")
-    if a < 0 or b < 0:
-        raise ValueError(f"no JSON array in output: {text[:300]}")
-
     ids, valid = {m["id"] for m in markets}, {}
-    for d in json.loads(text[a:b + 1]):
+    for d in parse_forecasts(env.get("result", "")):
         try:
             mid, p, c = str(d["id"]), float(d["p_yes"]), float(d["confidence"])
             sources = [str(s) for s in d.get("sources", [])][:10]
@@ -138,6 +133,26 @@ def ask_claude(markets):
             valid[mid] = {"p": p, "conf": c, "reasoning": str(d.get("reasoning", ""))[:1000],
                           "sources": json.dumps(sources), "leaked": is_leaked(sources)}
     return valid
+
+
+def parse_forecasts(text):
+    """The forecasts array from the model's reply. Prose, ``` fences or stray brackets
+    around it ("[see sources]") must not lose the whole run."""
+    dec = json.JSONDecoder()
+    best = None
+    for i, ch in enumerate(text):
+        if ch != "[":
+            continue
+        try:
+            data, _ = dec.raw_decode(text, i)
+        except ValueError:
+            continue
+        items = [d for d in data if isinstance(d, dict) and "id" in d] if isinstance(data, list) else []
+        if items and (best is None or len(items) > len(best)):
+            best = items
+    if best is None:
+        raise ValueError(f"no JSON array in output: {text[:300]}")
+    return best
 
 
 def is_leaked(sources):
@@ -201,6 +216,67 @@ def best_bet(p, yes_bk, no_bk):
         if edge >= C.MIN_EDGE and c < 1 and (best is None or edge > best[0]):
             best = (edge, side, p_side, bk, edge / (1 - c))
     return best[1:] if best else None
+
+
+def shrink(p_model, p_market):
+    """Trade on a blend of model and market. Backtests of LLM signals showed the model's
+    disagreements with the market are mostly the model being wrong, so only part of the
+    gap is trusted until the calibration report proves otherwise."""
+    return p_market + C.SHRINK * (p_model - p_market)
+
+
+ASSET_RES = {k: re.compile(v, re.I) for k, v in C.ASSET_PATTERNS.items()}
+
+
+def asset_of(question):
+    """Underlying that several 'different' events share (BTC dip / BTC above X / ...)."""
+    for name, rx in ASSET_RES.items():
+        if rx.search(question or ""):
+            return name
+    return None
+
+
+def skip_reason(pr, m, st, held_events, held_assets):
+    """Why this forecast must not be traded (None = go on to pricing)."""
+    gap = abs(pr["p"] - m["yes_price"])
+    if pr["leaked"]:
+        return "forecast cited a price source"
+    if pr["conf"] < C.MIN_CONFIDENCE:
+        return "low confidence"
+    if gap > C.MAX_EDGE:
+        return f"gap {gap:.2f} vs market is implausibly large"
+    if abs(shrink(pr["p"], m["yes_price"]) - m["yes_price"]) < C.MIN_EDGE:
+        return "no edge after shrink"
+    if st["n_open"] >= C.MAX_OPEN_POSITIONS:
+        return "max open positions"
+    if m.get("url") and m["url"] in held_events:
+        return "already holding a position on this event"
+    asset = asset_of(m["question"])
+    if asset and held_assets.get(asset, 0) >= C.MAX_OPEN_PER_ASSET:
+        return f"already holding {asset} exposure"
+    return None
+
+
+def plan_trade(p_model, yes_price, yes_bk, no_bk, st, base):
+    """Side and size against the live books, or a skip reason (str)."""
+    bet = best_bet(shrink(p_model, yes_price), yes_bk, no_bk)
+    if not bet:
+        return "no edge vs ask + fee"
+    side, p_side, bk, f = bet
+    stake = min(base * C.KELLY_FRACTION * f, base * C.MAX_POSITION_FRAC,
+                base * C.MAX_TOTAL_EXPOSURE_FRAC - st["exposure"],
+                base * C.MAX_NEW_STAKE_PER_DAY_FRAC - st["today"])
+    if stake < C.MIN_STAKE_USD:
+        return "stake below minimum (limits or small edge)"
+    fill = walk_book(bk, stake)
+    if not fill:
+        return "book too thin"
+    shares, avg_cost, worst, fee = fill
+    if p_side - avg_cost < C.MIN_EDGE:
+        return "edge gone after slippage"
+    if shares < bk["min_size"]:
+        return "below min order size"
+    return {"side": side, "bk": bk, "stake": stake, "shares": shares, "worst": worst, "fee": fee}
 
 
 # --- risk --------------------------------------------------------------------------------
@@ -287,6 +363,13 @@ def run():
     base = min(st["bankroll"], st["equity"])
     held_events = {x[0] for x in con.execute(
         "SELECT event FROM positions WHERE status='open' AND mode=? AND event IS NOT NULL", (C.MODE,))}
+    held_assets = {}
+    for (q,) in con.execute(
+            "SELECT (SELECT question FROM predictions WHERE market_id=p.market_id ORDER BY id DESC LIMIT 1) "
+            "FROM positions p WHERE status='open' AND mode=?", (C.MODE,)):
+        a = asset_of(q)
+        if a:
+            held_assets[a] = held_assets.get(a, 0) + 1
     for m in markets:
         pr = preds.get(m["id"])
         if not pr:
@@ -296,40 +379,21 @@ def run():
                     (ts, m["id"], m["question"], pr["p"], m["yes_price"], pr["conf"], pr["reasoning"],
                      pr["sources"], int(pr["leaked"]), C.FORECAST_VERSION))
         con.commit()
-        if pr["leaked"]:
-            log.info("skip %s: forecast cited a price source", m["id"])
-            continue
-        if pr["conf"] < C.MIN_CONFIDENCE or abs(pr["p"] - m["yes_price"]) < C.MIN_EDGE:
-            continue  # no chance of an edge; don't spend book requests
-        if abs(pr["p"] - m["yes_price"]) > C.MAX_EDGE:
-            log.info("skip %s: gap %.2f vs market is implausibly large", m["id"], abs(pr["p"] - m["yes_price"]))
-            continue
-        if st["n_open"] >= C.MAX_OPEN_POSITIONS:
-            break
-        if m["url"] and m["url"] in held_events:
-            # sibling markets of one event (same question, other dates) are one correlated bet
-            log.info("skip %s: already holding a position on this event", m["id"])
+        why = skip_reason(pr, m, st, held_events, held_assets)
+        if why:
+            if why not in ("low confidence", "no edge after shrink"):
+                log.info("skip %s: %s", m["id"], why)
             continue
         try:
             yes_bk, no_bk = book(m["yes_token"]), book(m["no_token"])
         except (requests.RequestException, ValueError) as e:
             log.warning("book failed %s: %s", m["id"], e)
             continue
-        bet = best_bet(pr["p"], yes_bk, no_bk)
-        if not bet:
+        plan = plan_trade(pr["p"], m["yes_price"], yes_bk, no_bk, st, base)
+        if isinstance(plan, str):
+            log.info("skip %s: %s", m["id"], plan)
             continue
-        side, p_side, bk, f = bet
-        stake = min(base * C.KELLY_FRACTION * f, base * C.MAX_POSITION_FRAC)
-        stake = min(stake, base * C.MAX_TOTAL_EXPOSURE_FRAC - st["exposure"],
-                    base * C.MAX_NEW_STAKE_PER_DAY_FRAC - st["today"])
-        if stake < C.MIN_STAKE_USD:
-            continue
-        fill = walk_book(bk, stake)
-        if not fill:
-            continue
-        shares, avg_cost, worst, fee = fill
-        if p_side - avg_cost < C.MIN_EDGE or shares < bk["min_size"]:
-            continue
+        side, bk, stake, shares, worst, fee = (plan[k] for k in ("side", "bk", "stake", "shares", "worst", "fee"))
         token = m["yes_token"] if side == "YES" else m["no_token"]
         order_id = None
         if C.MODE == "live":
@@ -343,6 +407,8 @@ def run():
                     (ts, m["id"], side, token, stake / shares, stake, shares, C.MODE, fee, order_id, m["url"]))
         con.commit()  # a live fill must never be lost to a later crash
         held_events.add(m["url"])
+        if asset_of(m["question"]):
+            held_assets[asset_of(m["question"])] = held_assets.get(asset_of(m["question"]), 0) + 1
         st["exposure"] += stake
         st["today"] += stake
         st["n_open"] += 1

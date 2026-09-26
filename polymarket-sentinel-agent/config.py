@@ -18,6 +18,11 @@ MAX_OPEN_POSITIONS = 10
 MAX_DRAWDOWN = 0.30              # equity (incl. unrealized) -30% -> KILL file is created
 MIN_EDGE = 0.07                  # p_model - all-in cost per share (ask + fee), to act
 MAX_EDGE = 0.35                  # bigger gaps vs a liquid market ~always = misread rules: record, don't trade
+SHRINK = 0.5                     # trade on market + SHRINK*(model - market): trust half the disagreement
+MAX_OPEN_PER_ASSET = 1           # BTC dip / BTC above X / ETH dip ... are one bet on the same underlying
+# Crypto moves together (BTC/ETH correlation ~0.8+), so it is one group.
+ASSET_PATTERNS = {"CRYPTO": r"\b(bitcoin|btc|ethereum|eth|xrp)\b|\bsolana\b(?! beach)|\bSOL\b",
+                  "OIL": r"\b(wti|brent|crude oil)\b", "GOLD": r"\bgold \((gc|xau)\)|\bxau\b|\bprice of gold\b"}
 MIN_CONFIDENCE = 0.6
 MIN_STAKE_USD = 2.0
 
@@ -44,7 +49,7 @@ TAKER_FEE_RATE = 0.07
 # Bump when the prompt or the model's inputs change: the report scores only the current version,
 # so forecasts made under old conditions don't pollute the edge verdict.
 # v1: descriptions cut at 1200 chars.  v2: full resolution rules.
-# v3: market creation date given (v2 counted pre-creation price touches as YES).
+# v3: market creation date and current UTC time given (v2 counted pre-creation price touches as YES).
 FORECAST_VERSION = 3
 
 # --- claude code ---
