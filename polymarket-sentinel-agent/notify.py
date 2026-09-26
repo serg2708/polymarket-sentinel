@@ -32,8 +32,9 @@ def market_url(m):
     return f"https://polymarket.com/event/{slug}" if slug else None
 
 
-def send(text, url=None):
-    """text is HTML; escape dynamic parts with esc(). url adds a "Polymarket ↗" button."""
+def send(text, url=None, tag=None):
+    """text is HTML; escape dynamic parts with esc(). url adds a "Polymarket ↗" button.
+    tag replaces the default "PolySentinel agent [mode]" header."""
     token, chat = _creds()
     if not token or not chat:
         log.warning("telegram not configured, alert dropped")
@@ -41,7 +42,7 @@ def send(text, url=None):
     h = datetime.now().hour
     try:
         r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", timeout=15, json={
-            "chat_id": chat, "text": f"🤖 <b>PolySentinel agent [{C.MODE}]</b>\n{text}"[:4096],
+            "chat_id": chat, "text": f"🤖 <b>{esc(tag) if tag else f'PolySentinel agent [{C.MODE}]'}</b>\n{text}"[:4096],
             "parse_mode": "HTML", "disable_web_page_preview": True,
             "disable_notification": h >= QUIET_START or h < QUIET_END,
             **({"reply_markup": {"inline_keyboard": [[{"text": "Polymarket ↗", "url": url}]]}} if url else {})})

@@ -22,7 +22,9 @@ Live needs POLY_PK, POLY_FUNDER (and POLY_SIG_TYPE, used by the heartbeat client
 """
 import argparse
 import logging
+import math
 import os
+import re
 import signal
 import sqlite3
 import sys
@@ -47,6 +49,8 @@ CAPITAL_PER_MARKET = float(os.getenv("MM_CAPITAL_PER_MARKET", "50"))
 MAX_DAILY_LOSS = float(os.getenv("MM_MAX_DAILY_LOSS", "15"))
 SPREAD = SH.SPREAD
 MAX_INV_FRAC = 1.0               # net inventory cap per market = this × quote size
+MIN_ORDER = 5                    # exchange minimum order size (shares)
+CASH_BUFFER = 0.98               # never commit the last 2% of cash (rounding, fees)
 LOOP_S = 15
 HEARTBEAT_S = 4
 END_BUFFER_S = 3600
@@ -78,11 +82,11 @@ class DryRunExchange:
     def open_orders(self, cond):
         return [o for o in self.orders.values() if o["cond"] == cond]
 
-    def place(self, cond, token, price, size, tick, neg_risk):
+    def place(self, cond, token, side, price, size, tick, neg_risk):
         self.n += 1
         oid = f"dry{self.n}"
-        self.orders[oid] = {"id": oid, "cond": cond, "token": token, "price": price, "size": size}
-        log.info("[dry] BUY %s @ %.3f x %.1f", token[-6:], price, size)
+        self.orders[oid] = {"id": oid, "cond": cond, "token": token, "side": side, "price": price, "size": size}
+        log.info("[dry] %s %s @ %.3f x %.1f", side, token[-6:], price, size)
         return oid
 
     def cancel(self, ids):
@@ -133,16 +137,16 @@ class LiveExchange:
         return int(self.sc.get_balance_allowance(asset_type="CONDITIONAL", token_id=token).balance) / 1e6
 
     def open_orders(self, cond):
-        return [{"id": o.id, "cond": cond, "token": o.asset_id, "price": float(o.price),
+        return [{"id": o.id, "cond": cond, "token": o.asset_id, "side": str(o.side).upper(), "price": float(o.price),
                  "size": float(o.original_size) - float(o.size_matched)}
                 for o in self.sc.list_open_orders(market=cond).iter_items()]
 
-    def place(self, cond, token, price, size, tick, neg_risk):
+    def place(self, cond, token, side, price, size, tick, neg_risk):
         # tick size and neg-risk are resolved by the SDK itself
-        r = self.sc.place_limit_order(token_id=token, price=str(price), size=str(size), side="BUY", post_only=True)
+        r = self.sc.place_limit_order(token_id=token, price=str(price), size=str(size), side=side, post_only=True)
         if not r.ok:
             raise RuntimeError(f"order rejected: {getattr(r, 'code', '')} {getattr(r, 'message', '')}")
-        log.info("placed BUY %s @ %.3f x %.1f", token[-6:], price, size)
+        log.info("placed %s %s @ %.3f x %.1f", side, token[-6:], price, size)
         return r.order_id
 
     def cancel(self, ids):
@@ -161,12 +165,19 @@ class LiveExchange:
         self.hb_id = (r or {}).get("heartbeat_id", self.hb_id)
 
     def fills_since(self, ts):
+        """Our own part of each trade: a trade record carries the taker's side and total size; our
+        maker order is in maker_orders."""
         out = []
         for t in self.sc.list_account_trades(maker_address=self.funder, after=str(int(ts))).iter_items():
             d = t.model_dump()
-            out.append({"id": d["id"], "market": d.get("market") or d.get("condition_id"), "asset_id": d["asset_id"],
-                        "side": d["side"], "price": float(d["price"]), "size": float(d["size"]),
-                        "match_time": int(d["matched_at"].timestamp()) if d.get("matched_at") else None})
+            when = int(d["matched_at"].timestamp()) if d.get("matched_at") else None
+            for i, mo in enumerate(d.get("maker_orders") or []):
+                if str(mo.get("maker_address", "")).lower() != self.funder.lower():
+                    continue
+                out.append({"id": f"{d['id']}:{i}", "market": d.get("market") or d.get("condition_id"),
+                            "asset_id": mo.get("asset_id"), "outcome": mo.get("outcome"),
+                            "side": str(mo.get("side")).upper(), "price": float(mo.get("price") or 0),
+                            "size": float(mo.get("matched_amount") or 0), "match_time": when})
         return out
 
     def scoring(self, ids):
@@ -175,8 +186,14 @@ class LiveExchange:
 
 # --- strategy (pure, unit-tested) -------------------------------------------------------------------
 
-def targets(m, bids, asks, inv_yes, inv_no, now, capital=CAPITAL_PER_MARKET, spread=SPREAD):
-    """Desired resting orders {token: (price, size)} for one market, or {} with a reason to be flat."""
+def targets(m, bids, asks, inv_yes, inv_no, now, cash=float("inf"), capital=CAPITAL_PER_MARKET, spread=SPREAD):
+    """Desired resting orders {(token, side): (price, size)} for one market, or {} with a reason.
+
+    Each side of the quote is expressed the cheapest way we can afford:
+      bid (we get long YES):  SELL the NO we hold at 1-bid, else BUY YES at bid
+      ask (we get long NO):   SELL the YES we hold at ask,  else BUY NO at 1-ask
+    Selling inventory needs no cash (and scores for rewards the same); buys are sized to cash.
+    """
     mid = SH.adjusted_mid(bids, asks, m["min_size"])
     if mid is None:
         return {}, "no book"
@@ -187,15 +204,35 @@ def targets(m, bids, asks, inv_yes, inv_no, now, capital=CAPITAL_PER_MARKET, spr
     if not SH.MID_RANGE[0] <= mid <= SH.MID_RANGE[1]:
         return {}, "mid outside 10-90c"
     bid, ask = SH.our_quote(mid, m["tick"], spread)
-    no_bid = round(1 - ask, 4)
+    # Inventory is never offered below the book's raw midpoint: the size-cutoff mid used for reward
+    # scoring can sit far from it in a thin book (pilot 1: 0.61 vs 0.69) and would dump the position.
+    raw_mid = (max(p for p, _ in bids) + min(p for p, _ in asks)) / 2 if bids and asks else mid
+    tick = m["tick"]
+    sell_yes_px = round(max(ask, math.ceil(round(raw_mid / tick, 6)) * tick), 4)
+    sell_no_px = round(max(1 - bid, math.ceil(round((1 - raw_mid) / tick, 6)) * tick), 4)
     size = round(max(capital / (1 - 2 * spread), m["min_size"]), 2)
-    net = inv_yes - inv_no
+    cap, net = MAX_INV_FRAC * size, inv_yes - inv_no
+    avail = cash * CASH_BUFFER
     out = {}
-    if net < MAX_INV_FRAC * size:                 # not already long YES beyond the cap
-        out[m["yes"]] = (bid, size)
-    if -net < MAX_INV_FRAC * size:                # not already long NO beyond the cap
-        out[m["no"]] = (no_bid, size)
-    return out, None
+    if inv_no >= MIN_ORDER:
+        out[(m["no"], "SELL")] = (sell_no_px, floor2(min(inv_no, size)))
+    elif net < cap:
+        sz = floor2(min(size, avail / bid))
+        if sz >= MIN_ORDER:
+            out[(m["yes"], "BUY")] = (bid, sz)
+            avail -= sz * bid
+    if inv_yes >= MIN_ORDER:
+        out[(m["yes"], "SELL")] = (sell_yes_px, floor2(min(inv_yes, size)))
+    elif -net < cap:
+        p = round(1 - ask, 4)
+        sz = floor2(min(size, avail / p))
+        if sz >= MIN_ORDER:
+            out[(m["no"], "BUY")] = (p, sz)
+    return out, None if out else "no affordable side"
+
+
+def floor2(x):
+    return math.floor(x * 100) / 100
 
 
 def diff_orders(current, wanted, tick):
@@ -203,14 +240,15 @@ def diff_orders(current, wanted, tick):
     size is kept, so it keeps its queue priority."""
     cancel, place, kept = [], [], set()
     for o in current:
-        w = wanted.get(o["token"])
-        if w and abs(o["price"] - w[0]) < tick / 2 and o["token"] not in kept and o["size"] >= 0.5 * w[1]:
-            kept.add(o["token"])
+        key = (o["token"], o.get("side", "BUY"))
+        w = wanted.get(key)
+        if w and abs(o["price"] - w[0]) < tick / 2 and key not in kept and 0.5 * w[1] <= o["size"] <= 1.05 * w[1]:
+            kept.add(key)
         else:
             cancel.append(o["id"])
-    for token, (price, size) in wanted.items():
-        if token not in kept:
-            place.append((token, price, size))
+    for (token, side), (price, size) in wanted.items():
+        if (token, side) not in kept:
+            place.append((token, side, price, size))
     return cancel, place
 
 
@@ -233,6 +271,17 @@ def market_info(cond):
             "event_ts": SH.event_start(m), "accepting": m.get("accepting_orders", True)}
 
 
+# Markets fed by data that is published continuously or daily (streaming charts, views, weather,
+# sports, asset prices, box office): informed traders pick off resting quotes the moment it lands.
+# Pilot 1 was filled at 0.82 on a Spotify #2-song market minutes before it dropped to ~0.69.
+INFO_RISK = re.compile(
+    r"song|chart|spotify|billboard|streams?\b|netflix|youtube|views|video|temperature|precipitation|rain|snow|"
+    r"box office|opening weekend|\bvs\.?\b|win on|o/u|spread|game|match|price of|bitcoin|btc|ethereum|eth\b|"
+    r"solana|xrp|crypto|stock|s&p|nasdaq|dow jones|\(high\)|\(low\)|\bhit \$|reach \$|dip to|"
+    r"\bmlb\b|\bnba\b|\bnfl\b|\bnhl\b|premier league|la liga|serie a|champions league|season|"
+    r"pitcher|goals?\b|touchdowns?|home runs?|mvp|playoffs?", re.I)
+
+
 def best_from_shadow(n, min_days=1):
     """Markets with the best measured net result per $ in the shadow MM (still tradeable)."""
     con = sqlite3.connect(SH.DB_PATH)
@@ -241,7 +290,8 @@ def best_from_shadow(n, min_days=1):
     if days < min_days:
         raise SystemExit(f"shadow MM has {days} day(s) of data; need {min_days}")
     q2cond = dict(con.execute("SELECT question, cond FROM markets WHERE tracking=1"))
-    ranked = sorted((r for r in rows if r["q"] in q2cond and r["net"] > 0), key=lambda r: -r["net"] / r["capital"])
+    ranked = sorted((r for r in rows if r["q"] in q2cond and r["net"] > 0 and not INFO_RISK.search(r["q"])),
+                    key=lambda r: -r["net"] / r["capital"])
     return [q2cond[r["q"]] for r in ranked[:n]]
 
 
@@ -273,6 +323,9 @@ class Runner:
                 log.warning("heartbeat failed: %s", e)
             self.stop.wait(HEARTBEAT_S)
 
+    def notify(self, text):
+        send(text, tag=f"PolySentinel market maker [{'LIVE' if self.live else 'dry-run'}]")
+
     def cancel_own(self):
         """Cancel our orders only — the account may also hold the owner's manual orders."""
         for m in self.markets:
@@ -284,7 +337,7 @@ class Runner:
             self.cancel_own()
         finally:
             KILL.write_text(f"{datetime.now(timezone.utc).isoformat()} {why}\n")
-            send(f"🛑 <b>Live MM stopped</b>: {esc(why)}. All orders cancelled. Remove <code>mm/KILL</code> to restart.")
+            self.notify(f"🛑 <b>stopped</b>: {esc(why)}. All orders cancelled. Remove <code>mm/KILL</code> to restart.")
             self.stop.set()
 
     def check_risk(self):
@@ -292,7 +345,7 @@ class Runner:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if day != self.day:
             if self.day is not None:
-                send(f"🧮 <b>Live MM {'LIVE' if self.live else 'dry-run'} — {self.day}</b>\n"
+                self.notify(f"🧮 <b>day {self.day}</b>\n"
                      f"equity ${self.day_start_equity:.2f} → ${eq:.2f} ({eq - self.day_start_equity:+.2f}, "
                      f"includes rewards paid at 00:00 UTC)\n{self.scoring_line()}")
             self.day, self.day_start_equity = day, eq
@@ -316,20 +369,22 @@ class Runner:
         if new:
             self.last_fill_ts = time.time()
             self.con.commit()
-            send(f"💱 Live MM: {len(new)} fill(s) — " + ", ".join(
-                f"{t.get('side')} {float(t.get('size') or 0):.0f} @ {float(t.get('price') or 0):.2f}" for t in new[:5]))
+            self.notify(f"💱 {len(new)} fill(s): " + ", ".join(
+                f"{t.get('side')} {float(t.get('size') or 0):.1f} {t.get('outcome') or ''} @ {float(t.get('price') or 0):.2f}"
+                for t in new[:5]))
 
     def quote_market(self, m, now):
         bids, asks = SH.book(m["yes"])
-        wanted, why = targets(m, bids, asks, self.ex.balance(m["yes"]), self.ex.balance(m["no"]), now)
+        wanted, why = targets(m, bids, asks, self.ex.balance(m["yes"]), self.ex.balance(m["no"]), now,
+                              cash=self.ex.cash())
         if not m["accepting"]:
             wanted, why = {}, "not accepting orders"
         cancel, place = diff_orders(self.ex.open_orders(m["cond"]), wanted, m["tick"])
         self.ex.cancel(cancel)
         ids = []
-        for token, price, size in place:
+        for token, side, price, size in place:
             try:
-                ids.append(self.ex.place(m["cond"], token, price, size, m["tick"], m["neg_risk"]))
+                ids.append(self.ex.place(m["cond"], token, side, price, size, m["tick"], m["neg_risk"]))
             except Exception as e:
                 log.warning("place failed %s: %s", m["question"][:40], e)
         if why:
@@ -342,7 +397,7 @@ class Runner:
         self.cancel_own()                             # clean slate on our markets
         signal.signal(signal.SIGTERM, lambda *a: self.stop.set())
         threading.Thread(target=self.heartbeat_loop, daemon=True).start()
-        send(f"▶️ Live MM started ({'LIVE' if self.live else 'dry-run'}): " +
+        self.notify("▶️ started: " +
              "; ".join(esc(m["question"][:50]) for m in self.markets))
         last_scoring = 0.0
         try:
