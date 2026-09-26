@@ -33,6 +33,7 @@ weekly timer (пн 09:13) → resolve.py → reports/report-ДАТА.txt
 | Ошибка Claude (лимиты и т.п.) | ⚠️ запуск пропущен |
 | Падение скрипта | ❌ текст ошибки |
 | Понедельник 09:13 | 📊 недельный отчёт |
+| Понедельник 09:13 | 🧪 бэктест LLM-сигналов основного бота (tail_risk, soft_edge, news_divergence) |
 
 Запуски без сделок молчат. С 22:00 до 08:00 сообщения приходят без звука.
 
@@ -47,6 +48,7 @@ cd ~/dev/polymarket-sentinel/polymarket-sentinel-agent
 |---|---|
 | Отчёт: есть ли перевес, PnL | `.venv/bin/python resolve.py` |
 | Все ставки с текущими ценами | `.venv/bin/python resolve.py --positions` |
+| Бэктест сигналов основного бота | `.venv/bin/python backtest_signals.py` |
 | Еженедельные отчёты | `ls reports/` , `cat reports/report-*.txt` |
 | Логи в реальном времени | `journalctl --user -u polysentinel-agent -f` |
 | Логи последних запусков | `journalctl --user -u polysentinel-agent -n 100 --no-pager` |

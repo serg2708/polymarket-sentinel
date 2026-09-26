@@ -8,3 +8,4 @@ Environment=AGENT_MODE=paper
 Environment=AGENT_BANKROLL=300
 ExecStartPre=/usr/bin/mkdir -p reports
 ExecStart=/bin/sh -c '.venv/bin/python resolve.py --notify > reports/report-$(date +%%F).txt 2>&1'
+ExecStart=/bin/sh -c '.venv/bin/python backtest_signals.py --notify > reports/signals-$(date +%%F).txt 2>&1'
