@@ -1,0 +1,15 @@
+[Unit]
+Description=PolySentinel Telegram control panel executor (runs /control commands)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/polymarket-sentinel/polymarket-sentinel-agent
+# only for the read-only balance line in "status"; optional
+EnvironmentFile=-%h/.config/polysentinel/secrets.env
+ExecStart=%h/dev/polymarket-sentinel/polymarket-sentinel-agent/.venv/bin/python control/controller.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

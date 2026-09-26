@@ -48,7 +48,8 @@ async def cmd_start(msg: Message):
         "/pause &lt;duration&gt; — pause alerts (e.g. 2h, 30m)\n"
         "/resume — resume paused alerts\n"
         "/calibration — show model calibration stats\n"
-        "/explain &lt;alert_id&gt; — verbose alert breakdown\n",
+        "/explain &lt;alert_id&gt; — verbose alert breakdown\n"
+        "/control — панель: агент, маркетмейкер (старт/стоп/KILL)\n",
     )
 
 

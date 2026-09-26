@@ -26,6 +26,7 @@ from ..common.metrics import start_metrics_server, ALERTS_TOTAL
 from ..common.settings import get_settings
 from .formatting import format_alert
 from .handlers import router
+from .control import router as control_router
 
 log = structlog.get_logger()
 settings = get_settings()
@@ -167,10 +168,12 @@ async def main() -> None:
         BotCommand(command="threshold",   description="Set alert threshold (arb/soft <bps>)"),
         BotCommand(command="calibration", description="Model accuracy (Brier score)"),
         BotCommand(command="explain",     description="Verbose breakdown of an alert by ID"),
+        BotCommand(command="control",     description="Control panel: agent + market maker"),
     ])
 
     dp = Dispatcher()
     dp.include_router(router)
+    dp.include_router(control_router)
 
     # Inject dependencies into handlers via middleware
     dp["pool"] = pool

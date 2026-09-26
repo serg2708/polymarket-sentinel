@@ -1,3 +1,4 @@
 requests
 py-clob-client  # live mode only
 polymarket-client  # live market maker (unified Polymarket SDK)
+redis  # control/controller.py (Telegram control panel)
