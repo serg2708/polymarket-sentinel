@@ -14,9 +14,14 @@ GAMMA = "https://gamma-api.polymarket.com"
 def market_state(market_id):
     """Returns (outcome or None, current YES price or None, page url or None)."""
     try:
-        # list endpoint, unlike /markets/{id}, includes events[] (needed for the page url)
-        r = requests.get(f"{GAMMA}/markets", params={"id": market_id}, timeout=20)
-        m = r.json()[0] if r.status_code == 200 and r.json() else None
+        # list endpoint, unlike /markets/{id}, includes events[] (needed for the page url).
+        # It hides closed markets unless asked, so try open first, then closed.
+        m = None
+        for extra in ({}, {"closed": "true"}):
+            r = requests.get(f"{GAMMA}/markets", params={"id": market_id, **extra}, timeout=20)
+            if r.status_code == 200 and r.json():
+                m = r.json()[0]
+                break
     except (requests.RequestException, ValueError):
         m = None
     if not m:
