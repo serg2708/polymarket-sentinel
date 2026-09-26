@@ -17,6 +17,7 @@ MAX_NEW_STAKE_PER_DAY_FRAC = 0.15
 MAX_OPEN_POSITIONS = 10
 MAX_DRAWDOWN = 0.30              # equity (incl. unrealized) -30% -> KILL file is created
 MIN_EDGE = 0.07                  # p_model - all-in cost per share (ask + fee), to act
+MAX_EDGE = 0.35                  # bigger gaps vs a liquid market ~always = misread rules: record, don't trade
 MIN_CONFIDENCE = 0.6
 MIN_STAKE_USD = 2.0
 
@@ -43,7 +44,8 @@ TAKER_FEE_RATE = 0.07
 # Bump when the prompt or the model's inputs change: the report scores only the current version,
 # so forecasts made under old conditions don't pollute the edge verdict.
 # v1: descriptions cut at 1200 chars.  v2: full resolution rules.
-FORECAST_VERSION = 2
+# v3: market creation date given (v2 counted pre-creation price touches as YES).
+FORECAST_VERSION = 3
 
 # --- claude code ---
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")

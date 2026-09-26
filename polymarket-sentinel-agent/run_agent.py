@@ -97,6 +97,7 @@ def fetch_candidates(con):
             continue
         (again if mid in seen else fresh).append(
             {"id": mid, "question": q, "description": (m.get("description") or "")[:C.MAX_DESCRIPTION_CHARS],
+             "created": (m.get("startDate") or m.get("createdAt") or "")[:16],
              "end_date": m["endDate"], "yes_price": prices[0],
              "yes_token": tokens[0], "no_token": tokens[1], "url": market_url(m)})
     # Top-by-volume markets are the most efficient and barely change run to run: sample instead,
@@ -107,7 +108,7 @@ def fetch_candidates(con):
 
 
 def ask_claude(markets):
-    blind = [{k: m[k] for k in ("id", "question", "description", "end_date")} for m in markets]
+    blind = [{k: m[k] for k in ("id", "question", "description", "created", "end_date")} for m in markets]
     prompt = (C.PROMPT_PATH.read_text()
               .replace("{{TODAY}}", now().date().isoformat())
               .replace("{{MARKETS}}", json.dumps(blind, ensure_ascii=False, indent=1)))
@@ -300,6 +301,9 @@ def run():
             continue
         if pr["conf"] < C.MIN_CONFIDENCE or abs(pr["p"] - m["yes_price"]) < C.MIN_EDGE:
             continue  # no chance of an edge; don't spend book requests
+        if abs(pr["p"] - m["yes_price"]) > C.MAX_EDGE:
+            log.info("skip %s: gap %.2f vs market is implausibly large", m["id"], abs(pr["p"] - m["yes_price"]))
+            continue
         if st["n_open"] >= C.MAX_OPEN_POSITIONS:
             break
         if m["url"] and m["url"] in held_events:
