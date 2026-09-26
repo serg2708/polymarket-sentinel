@@ -13,7 +13,7 @@ BOOK = ([(0.49, 300)], [(0.51, 300)])
 
 
 def test_targets_two_sided_quote_as_two_bids():
-    want, why = L.targets(M, *BOOK, 0, 0, 1000, capital=49)
+    want, why = L.targets(M, *BOOK, 0, 0, 1000, capital=49, spread=0.01)
     assert why is None
     assert want[("Y", "BUY")][0] == pytest.approx(0.49) and want[("N", "BUY")][0] == pytest.approx(0.49)
     assert want[("Y", "BUY")][1] == pytest.approx(50)                                     # 49 / (1 - 0.02)
@@ -32,14 +32,14 @@ def test_targets_flat_when_unsafe(m, book, why):
 
 def test_targets_sells_held_yes_instead_of_buying_no():
     """Pilot 1: after a YES fill the bot kept trying to BUY NO with cash it no longer had."""
-    want, _ = L.targets(M, *BOOK, 45.92, 0, 1000, cash=12.35, capital=45)
+    want, _ = L.targets(M, *BOOK, 45.92, 0, 1000, cash=12.35, capital=45, spread=0.01)
     assert want[("Y", "SELL")] == (pytest.approx(0.51), 45.92)                           # offer the inventory
     assert ("N", "BUY") not in want
     assert ("Y", "BUY") not in want                                                      # at the inventory cap
 
 
 def test_targets_sells_held_no_on_the_bid_side():
-    want, _ = L.targets(M, *BOOK, 0, 30, 1000, cash=100, capital=45)
+    want, _ = L.targets(M, *BOOK, 0, 30, 1000, cash=100, capital=45, spread=0.01)
     assert want[("N", "SELL")] == (pytest.approx(0.51), 30)                              # 1 - bid
     assert ("Y", "BUY") not in want and ("N", "BUY") in want
 
@@ -160,3 +160,74 @@ def test_inventory_never_offered_below_raw_mid():
     want, _ = L.targets(dict(M, min_size=100), bids, asks, 45.92, 0, 1000, cash=12.35, capital=45)
     price, size = want[("Y", "SELL")]
     assert price >= 0.69 and size == pytest.approx(45.92)
+
+
+
+# --- fixes after pilot 2 (Saudi / Gemini, 2026-09-26) ------------------------------------------
+
+def test_buy_never_exceeds_inventory_cap():
+    """Pilot 2 Gemini: after 30 YES filled the bot bid for another full 50 -> held 80 (cap 50)."""
+    full = L.targets(M, *BOOK, 0, 0, 1000, cash=500, capital=49, spread=0.01)[0][("Y", "BUY")][1]
+    want, _ = L.targets(M, *BOOK, 0, 0, 1000, cash=500, capital=49, spread=0.01)
+    part, _ = L.targets(M, *BOOK, 30, 0, 1000, cash=500, capital=49, spread=0.01)
+    assert ("Y", "BUY") not in part or part[("Y", "BUY")][1] <= full - 30 + 1e-9
+    no_side, _ = L.targets(M, *BOOK, 0, 30, 1000, cash=500, capital=49, spread=0.01)
+    assert ("N", "BUY") not in no_side or no_side[("N", "BUY")][1] <= full - 30 + 1e-9
+
+
+def test_bid_never_above_raw_mid_when_big_orders_drag_the_reward_mid():
+    """Pilot 2 Gemini: book 0.35/0.39 but large orders put the size-cutoff mid near 0.50;
+    the bot bid 0.49 for YES and was filled at once."""
+    bids = [(0.35, 30), (0.34, 60)]
+    asks = [(0.39, 30), (0.65, 5000)]
+    want, _ = L.targets(dict(M, min_size=50), bids, asks, 0, 0, 1000, cash=500, capital=49, spread=0.01)
+    assert want[("Y", "BUY")][0] <= 0.36 + 1e-9                  # raw mid 0.37 - 1c
+    assert 1 - want[("N", "BUY")][0] >= 0.38 - 1e-9              # our implied YES ask stays above raw mid
+
+
+def test_paused_market_only_offers_inventory():
+    want, why = L.targets(M, *BOOK, 20, 0, 1000, cash=500, capital=49, allow_buys=False)
+    assert set(want) == {("Y", "SELL")}
+    none, why = L.targets(M, *BOOK, 0, 0, 1000, cash=500, capital=49, allow_buys=False)
+    assert none == {} and "paused" in why
+
+
+def test_jumped():
+    hist = [(1000, 0.50), (1030, 0.50)]
+    assert not L.jumped(hist, 1040, 0.52)
+    assert L.jumped(hist, 1040, 0.54)
+    assert not L.jumped(hist, 1030 + L.JUMP_WINDOW_S + 5, 0.60)   # both samples outside the window
+
+
+def test_no_duplicate_when_listing_lags(runner):
+    """Pilot 2 Saudi: a fresh order missing from the listing made the bot place a second one."""
+    m = runner.markets[0]
+    runner.quote_market(m, 1000)
+    assert len(runner.ex.orders) == 2
+    runner.ex.hidden = set(runner.ex.orders)                     # exchange doesn't list them yet
+    runner.quote_market(m, 1015)
+    assert len(runner.ex.orders) == 2                            # nothing placed twice
+    runner.ex.hidden = set()
+    runner.quote_market(m, 1030)
+    assert len(runner.ex.orders) == 2
+
+
+def test_fill_pauses_buys_on_that_market(runner):
+    m = runner.markets[0]
+    runner.quote_market(m, 1000)
+    runner.ex.bal[m["yes"]] = 20.0                               # our YES bid got hit
+    runner.quote_market(m, 1015)
+    sides = {(o["token"], o["side"]) for o in runner.ex.orders.values()}
+    assert (m["yes"], "BUY") not in sides and (m["no"], "BUY") not in sides
+    assert (m["yes"], "SELL") in sides                           # inventory is still offered
+    runner.quote_market(m, 1015 + L.FILL_COOLDOWN_S + 1)
+    sides = {(o["token"], o["side"]) for o in runner.ex.orders.values()}
+    assert (m["yes"], "BUY") in sides                            # buys resume after the cooldown
+
+
+def test_price_jump_pauses_buys(runner, monkeypatch):
+    m = runner.markets[0]
+    runner.quote_market(m, 1000)
+    monkeypatch.setattr(L.SH, "book", lambda token: ([(0.55, 300)], [(0.57, 300)]))
+    runner.quote_market(m, 1015)
+    assert not any(o["side"] == "BUY" for o in runner.ex.orders.values())

@@ -47,13 +47,18 @@ CLOB = SH.CLOB
 
 CAPITAL_PER_MARKET = float(os.getenv("MM_CAPITAL_PER_MARKET", "50"))
 MAX_DAILY_LOSS = float(os.getenv("MM_MAX_DAILY_LOSS", "15"))
-SPREAD = SH.SPREAD
+SPREAD = float(os.getenv("MM_SPREAD", "0.02"))   # live quotes 2c from mid: fewer fills than the shadow's 1c
 MAX_INV_FRAC = 1.0               # net inventory cap per market = this × quote size
 MIN_ORDER = 5                    # exchange minimum order size (shares)
 CASH_BUFFER = 0.98               # never commit the last 2% of cash (rounding, fees)
 LOOP_S = 15
 HEARTBEAT_S = 4
 END_BUFFER_S = 3600
+FILL_COOLDOWN_S = 300            # after any fill on a market: no new buys there for 5 min
+JUMP = 0.03                      # mid moved more than this within JUMP_WINDOW_S ...
+JUMP_WINDOW_S = 90
+JUMP_PAUSE_S = 300               # ... -> no buys on that market for 5 min
+PENDING_S = 60                   # our fresh orders may not show in the open-orders listing yet
 
 log = logging.getLogger("live_mm")
 
@@ -71,16 +76,16 @@ class DryRunExchange:
     """Logs what would be sent; keeps an in-memory order book of our own orders; never fills."""
 
     def __init__(self, cash=100.0):
-        self.orders, self.n, self._cash = {}, 0, cash
+        self.orders, self.n, self._cash, self.bal, self.hidden = {}, 0, cash, {}, set()
 
     def cash(self):
         return self._cash
 
     def balance(self, token):
-        return 0.0
+        return self.bal.get(token, 0.0)
 
     def open_orders(self, cond):
-        return [o for o in self.orders.values() if o["cond"] == cond]
+        return [o for o in self.orders.values() if o["cond"] == cond and o["id"] not in self.hidden]
 
     def place(self, cond, token, side, price, size, tick, neg_risk):
         self.n += 1
@@ -193,7 +198,8 @@ class LiveExchange:
 
 # --- strategy (pure, unit-tested) -------------------------------------------------------------------
 
-def targets(m, bids, asks, inv_yes, inv_no, now, cash=float("inf"), capital=CAPITAL_PER_MARKET, spread=SPREAD):
+def targets(m, bids, asks, inv_yes, inv_no, now, cash=float("inf"), capital=CAPITAL_PER_MARKET, spread=SPREAD,
+            allow_buys=True):
     """Desired resting orders {(token, side): (price, size)} for one market, or {} with a reason.
 
     Each side of the quote is expressed the cheapest way we can afford:
@@ -215,6 +221,12 @@ def targets(m, bids, asks, inv_yes, inv_no, now, cash=float("inf"), capital=CAPI
     # scoring can sit far from it in a thin book (pilot 1: 0.61 vs 0.69) and would dump the position.
     raw_mid = (max(p for p, _ in bids) + min(p for p, _ in asks)) / 2 if bids and asks else mid
     tick = m["tick"]
+    # Buys never cross the book's raw midpoint either: a few large orders can drag the size-cutoff
+    # mid far away (Gemini: reward mid ~0.50 while the book was 0.35/0.39 -> our bid at 0.49 was hit).
+    bid = min(bid, round(math.floor(round((raw_mid - spread) / tick, 6)) * tick, 4))
+    ask = max(ask, round(math.ceil(round((raw_mid + spread) / tick, 6)) * tick, 4))
+    if bid <= 0 or ask >= 1:
+        return {}, "no room to quote"
     sell_yes_px = round(max(ask, math.ceil(round(raw_mid / tick, 6)) * tick), 4)
     sell_no_px = round(max(1 - bid, math.ceil(round((1 - raw_mid) / tick, 6)) * tick), 4)
     size = round(max(capital / (1 - 2 * spread), m["min_size"]), 2)
@@ -223,19 +235,32 @@ def targets(m, bids, asks, inv_yes, inv_no, now, cash=float("inf"), capital=CAPI
     out = {}
     if inv_no >= MIN_ORDER:
         out[(m["no"], "SELL")] = (sell_no_px, floor2(min(inv_no, size)))
-    elif net < cap:
-        sz = floor2(min(size, avail / bid))
+    elif net < cap and allow_buys:
+        sz = floor2(min(size, cap - net, avail / bid))           # never past the inventory cap
         if sz >= MIN_ORDER:
             out[(m["yes"], "BUY")] = (bid, sz)
             avail -= sz * bid
     if inv_yes >= MIN_ORDER:
         out[(m["yes"], "SELL")] = (sell_yes_px, floor2(min(inv_yes, size)))
-    elif -net < cap:
+    elif -net < cap and allow_buys:
         p = round(1 - ask, 4)
-        sz = floor2(min(size, avail / p))
+        sz = floor2(min(size, cap + net, avail / p))
         if sz >= MIN_ORDER:
             out[(m["no"], "BUY")] = (p, sz)
-    return out, None if out else "no affordable side"
+    return out, None if out else ("buys paused" if not allow_buys else "no affordable side")
+
+
+def jumped(history, now, mid, jump=JUMP, window=JUMP_WINDOW_S):
+    """True if the raw mid moved more than `jump` against any sample from the last `window` s."""
+    return any(now - t <= window and abs(mid - old) > jump for t, old in history)
+
+
+def merge_pending(current, pending, now, ttl=PENDING_S):
+    """Open orders as the exchange lists them, plus our own fresh orders it does not list yet.
+    Pilot 2: an order placed a moment earlier was missing from the listing, the bot placed a
+    second one, and both were filled (91.8 NO instead of 45.9)."""
+    seen = {o["id"] for o in current}
+    return list(current) + [o for o in pending.values() if now - o["ts"] < ttl and o["id"] not in seen]
 
 
 def floor2(x):
@@ -309,6 +334,8 @@ class Runner:
         self.stop = threading.Event()
         self.last_fill_ts = time.time()
         self.day, self.day_start_equity = None, None
+        self.pending = {}                                # order id -> our fresh order (see merge_pending)
+        self.prev_inv, self.mids, self.pause_until = {}, {}, {}
 
     # equity = cash + every held share marked to its token's mid
     def equity(self):
@@ -387,19 +414,44 @@ class Runner:
                 for t in new[:5]))
 
     def quote_market(self, m, now):
+        cond = m["cond"]
         bids, asks = SH.book(m["yes"])
-        wanted, why = targets(m, bids, asks, self.ex.balance(m["yes"]), self.ex.balance(m["no"]), now,
-                              cash=self.ex.cash())
+        inv_yes, inv_no = self.ex.balance(m["yes"]), self.ex.balance(m["no"])
+        # a fill on this market -> no new buys here for a while (don't get run over twice)
+        prev = self.prev_inv.get(cond)
+        if prev is not None and (abs(inv_yes - prev[0]) > 1e-6 or abs(inv_no - prev[1]) > 1e-6):
+            self.pause_until[cond] = max(self.pause_until.get(cond, 0), now + FILL_COOLDOWN_S)
+            log.info("fill on %s -> buys paused %d s", m["question"][:40], FILL_COOLDOWN_S)
+        self.prev_inv[cond] = (inv_yes, inv_no)
+        # a sudden move of the raw mid -> no new buys either (news or someone moving the book)
+        if bids and asks:
+            raw_mid = (max(p for p, _ in bids) + min(p for p, _ in asks)) / 2
+            hist = self.mids.setdefault(cond, [])
+            if jumped(hist, now, raw_mid):
+                self.pause_until[cond] = max(self.pause_until.get(cond, 0), now + JUMP_PAUSE_S)
+                log.info("price jump on %s -> buys paused %d s", m["question"][:40], JUMP_PAUSE_S)
+            hist.append((now, raw_mid))
+            self.mids[cond] = [(t, x) for t, x in hist if now - t <= JUMP_WINDOW_S]
+        allow = now >= self.pause_until.get(cond, 0)
+        wanted, why = targets(m, bids, asks, inv_yes, inv_no, now, cash=self.ex.cash(), allow_buys=allow)
         if not m["accepting"]:
             wanted, why = {}, "not accepting orders"
-        cancel, place = diff_orders(self.ex.open_orders(m["cond"]), wanted, m["tick"])
+        current = merge_pending(self.ex.open_orders(cond), {k: v for k, v in self.pending.items() if v["cond"] == cond}, now)
+        cancel, place = diff_orders(current, wanted, m["tick"])
         self.ex.cancel(cancel)
+        for oid in cancel:
+            self.pending.pop(oid, None)
         ids = []
         for token, side, price, size in place:
             try:
-                ids.append(self.ex.place(m["cond"], token, side, price, size, m["tick"], m["neg_risk"]))
+                oid = self.ex.place(cond, token, side, price, size, m["tick"], m["neg_risk"])
+                ids.append(oid)
+                self.pending[oid] = {"id": oid, "cond": cond, "token": token, "side": side, "price": price,
+                                     "size": size, "ts": now}
             except Exception as e:
                 log.warning("place failed %s: %s", m["question"][:40], e)
+        for oid in [k for k, v in self.pending.items() if now - v["ts"] >= PENDING_S]:
+            del self.pending[oid]
         if why:
             log.info("flat %s: %s", m["question"][:50], why)
         return ids
