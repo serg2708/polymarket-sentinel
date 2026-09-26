@@ -21,13 +21,13 @@ MIN_CONFIDENCE = 0.6
 MIN_STAKE_USD = 2.0
 
 # --- market selection ---
-MARKETS_PER_RUN = 8              # one claude -p call per run, keep small for limits
+MARKETS_PER_RUN = 12             # one claude -p call per run
 REEVAL_HOURS = 24                # don't re-forecast the same market more often
-CANDIDATE_POOL = 500             # markets pulled from gamma, then sampled
+CANDIDATE_POOL = 2000            # top markets by 24h volume; short-horizon filter needs a wide pool
 MAX_DESCRIPTION_CHARS = 6000     # full resolution rules; exclusions often sit at the end
 MIN_LIQUIDITY = 5000
 MIN_DAYS_TO_END = 2
-MAX_DAYS_TO_END = 60
+MAX_DAYS_TO_END = 21             # short markets resolve fast -> quicker edge verdict
 EXCLUDE_KEYWORDS = ["up or down", "tweets", "temperature", "o/u", "spread"]   # whole-word match
 
 # Sources that reveal the market price. A forecast citing them is "leaked": stored, never traded,
@@ -48,4 +48,4 @@ FORECAST_VERSION = 2
 # --- claude code ---
 CLAUDE_BIN = os.getenv("CLAUDE_BIN", "claude")
 CLAUDE_TIMEOUT_S = 900
-CLAUDE_MAX_TURNS = 30
+CLAUDE_MAX_TURNS = 50            # ~3 searches x 12 markets

@@ -1,8 +1,8 @@
 [Unit]
-Description=PolySentinel agent, 4 runs/day
+Description=PolySentinel agent, every 3 hours
 
 [Timer]
-OnCalendar=*-*-* 01,07,13,19:17:00
+OnCalendar=*-*-* 01/3:17:00
 RandomizedDelaySec=600
 Persistent=true
 
