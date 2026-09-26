@@ -17,7 +17,7 @@ needed to quote. Safety, in order of importance:
     python mm/live_mm.py --auto 2              # dry run on the 2 best markets from the shadow MM
     MM_LIVE=1 python mm/live_mm.py --live --markets <condition_id>,<condition_id>
 
-Live needs POLY_PK, POLY_FUNDER (and POLY_SIG_TYPE, default 1) in the environment
+Live needs POLY_PK, POLY_FUNDER (and POLY_SIG_TYPE, used by the heartbeat client) in the environment
 (~/.config/polysentinel/secrets.env via the systemd unit).
 """
 import argparse
@@ -108,67 +108,67 @@ class DryRunExchange:
 
 
 class LiveExchange:
+    """Polymarket's unified SDK (polymarket-client) for orders and account data.
+
+    The legacy py-clob-client signs orders in a format the exchange now rejects ("invalid order
+    version"), but its heartbeat endpoint is the only one exposed: it is used for that alone.
+    Verified 2026-09-26 on the owner's account: post-only order accepted, and auto-cancelled by the
+    exchange ~10 s after heartbeats stopped.
+    """
+
     def __init__(self):
+        from polymarket import SecureClient
         from py_clob_client.client import ClobClient
-        self.client = ClobClient(CLOB, key=os.environ["POLY_PK"], chain_id=137,
-                                 signature_type=int(os.getenv("POLY_SIG_TYPE", "1")),
-                                 funder=os.environ["POLY_FUNDER"])
-        self.client.set_api_creds(self.client.create_or_derive_api_creds())
         self.funder = os.environ["POLY_FUNDER"]
+        self.sc = SecureClient.create(private_key=os.environ["POLY_PK"], wallet=self.funder)
+        self.hb_client = ClobClient(CLOB, key=os.environ["POLY_PK"], chain_id=137,
+                                    signature_type=int(os.getenv("POLY_SIG_TYPE", "2")), funder=self.funder)
+        self.hb_client.set_api_creds(self.hb_client.create_or_derive_api_creds())
         self.hb_id = None
 
-    def _bal(self, **kw):
-        from py_clob_client.clob_types import BalanceAllowanceParams
-        r = self.client.get_balance_allowance(BalanceAllowanceParams(**kw))
-        return float(r.get("balance") or 0) / 1e6
-
     def cash(self):
-        from py_clob_client.clob_types import AssetType
-        return self._bal(asset_type=AssetType.COLLATERAL)
+        return int(self.sc.get_balance_allowance(asset_type="COLLATERAL").balance) / 1e6
 
     def balance(self, token):
-        from py_clob_client.clob_types import AssetType
-        return self._bal(asset_type=AssetType.CONDITIONAL, token_id=token)
+        return int(self.sc.get_balance_allowance(asset_type="CONDITIONAL", token_id=token).balance) / 1e6
 
     def open_orders(self, cond):
-        from py_clob_client.clob_types import OpenOrderParams
-        out = []
-        for o in self.client.get_orders(OpenOrderParams(market=cond)) or []:
-            left = float(o.get("original_size") or 0) - float(o.get("size_matched") or 0)
-            out.append({"id": o["id"], "cond": cond, "token": o["asset_id"], "price": float(o["price"]), "size": left})
-        return out
+        return [{"id": o.id, "cond": cond, "token": o.asset_id, "price": float(o.price),
+                 "size": float(o.original_size) - float(o.size_matched)}
+                for o in self.sc.list_open_orders(market=cond).iter_items()]
 
     def place(self, cond, token, price, size, tick, neg_risk):
-        from py_clob_client.clob_types import OrderArgs, OrderType, PartialCreateOrderOptions
-        from py_clob_client.order_builder.constants import BUY
-        order = self.client.create_order(OrderArgs(token_id=token, price=price, size=size, side=BUY),
-                                         PartialCreateOrderOptions(tick_size=str(tick), neg_risk=neg_risk))
-        r = self.client.post_order(order, OrderType.GTC, post_only=True)
-        if not r or not r.get("success"):
-            raise RuntimeError(f"order rejected: {r}")
-        return r.get("orderID")
+        # tick size and neg-risk are resolved by the SDK itself
+        r = self.sc.place_limit_order(token_id=token, price=str(price), size=str(size), side="BUY", post_only=True)
+        if not r.ok:
+            raise RuntimeError(f"order rejected: {getattr(r, 'code', '')} {getattr(r, 'message', '')}")
+        return r.order_id
 
     def cancel(self, ids):
         if ids:
-            self.client.cancel_orders(list(ids))
-
-    def cancel_all(self):
-        self.client.cancel_all()
+            self.sc.cancel_orders(order_ids=list(ids))
 
     def cancel_market(self, cond):
-        self.client.cancel_market_orders(market=cond)
+        self.sc.cancel_market_orders(market=cond)
+
+    def cancel_all(self):
+        self.sc.cancel_all()
 
     def heartbeat(self):
-        r = self.client.post_heartbeat(self.hb_id)
+        r = self.hb_client.post_heartbeat(self.hb_id)
         self.hb_id = (r or {}).get("heartbeat_id", self.hb_id)
 
     def fills_since(self, ts):
-        from py_clob_client.clob_types import TradeParams
-        return self.client.get_trades(TradeParams(maker_address=self.funder, after=int(ts))) or []
+        out = []
+        for t in self.sc.list_account_trades(maker_address=self.funder, after=str(int(ts))).iter_items():
+            d = t.model_dump()
+            out.append({"id": d["id"], "market": d.get("market") or d.get("condition_id"), "asset_id": d["asset_id"],
+                        "side": d["side"], "price": float(d["price"]), "size": float(d["size"]),
+                        "match_time": int(d["matched_at"].timestamp()) if d.get("matched_at") else None})
+        return out
 
     def scoring(self, ids):
-        from py_clob_client.clob_types import OrdersScoringParams
-        return self.client.are_orders_scoring(OrdersScoringParams(orderIds=list(ids))) if ids else {}
+        return self.sc.get_orders_scoring(order_ids=list(ids)) if ids else {}
 
 
 # --- strategy (pure, unit-tested) -------------------------------------------------------------------

@@ -301,23 +301,19 @@ def risk_state(con, marks):
 
 
 def place_live(token_id, stake, worst_price):
-    """Fill-or-kill market buy capped at worst_price. Returns (order_id, usd_spent, shares) or raises.
-    UNTESTED against a real account: verify on a $5 order before trusting it."""
-    from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import MarketOrderArgs, OrderType
-    from py_clob_client.order_builder.constants import BUY
-    client = ClobClient(CLOB, key=os.environ["POLY_PK"], chain_id=137,
-                        signature_type=int(os.getenv("POLY_SIG_TYPE", "1")),
-                        funder=os.environ["POLY_FUNDER"])
-    client.set_api_creds(client.create_or_derive_api_creds())
-    order = client.create_market_order(MarketOrderArgs(token_id=token_id, amount=round(stake, 2),
-                                                       side=BUY, price=worst_price))
-    resp = client.post_order(order, OrderType.FOK)
-    if not resp or not resp.get("success") or resp.get("status") != "matched":
-        raise RuntimeError(f"order not filled: {resp}")
-    spent = float(resp.get("makingAmount") or stake)
-    shares = float(resp.get("takingAmount") or 0) or stake / worst_price
-    return resp.get("orderID"), spent, shares
+    """Fill-or-kill market buy of `stake` USD (fees included) capped at worst_price.
+    Returns (order_id, usd_spent, shares) or raises. Uses Polymarket's unified SDK: the legacy
+    py-clob-client order format is rejected by the exchange ("invalid order version").
+    Order path verified with a post-only limit order on 2026-09-26; this FOK path is not yet."""
+    from polymarket import SecureClient
+    client = SecureClient.create(private_key=os.environ["POLY_PK"], wallet=os.environ["POLY_FUNDER"])
+    r = client.place_market_order(token_id=token_id, side="BUY", amount=str(round(stake, 2)),
+                                  max_spend=str(round(stake, 2)), max_price=str(worst_price), order_type="FOK")
+    if not r.ok or str(getattr(r, "status", "")).lower() != "matched":
+        raise RuntimeError(f"order not filled: {r}")
+    spent = float(r.making_amount) or stake
+    shares = float(r.taking_amount) or stake / worst_price
+    return r.order_id, spent, shares
 
 
 def main():
