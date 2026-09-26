@@ -1,0 +1,13 @@
+[Unit]
+Description=PolySentinel shadow market maker (no real money)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/polymarket-sentinel/polymarket-sentinel-agent
+ExecStart=%h/dev/polymarket-sentinel/polymarket-sentinel-agent/.venv/bin/python mm/shadow_mm.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
